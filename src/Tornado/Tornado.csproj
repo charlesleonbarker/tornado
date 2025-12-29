@@ -9,6 +9,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.0" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
+    <PackageReference Include="KubernetesClient" Version="13.0.13" />
   </ItemGroup>
 
   <Target Name="DevDeploy" AfterTargets="Build" Condition="'$(DevDeploy)' == 'true'">

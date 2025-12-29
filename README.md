@@ -1,9 +1,10 @@
 # Tornado
 
 Tornado is a minimal ASP.NET 8 + Blazor Server dashboard for inspecting a
-Kubernetes cluster. It exposes backend endpoints that shell out to `kubectl`
-and renders structured tables for services, deployments, ingresses, and pods
-with actions like restarting deployments or opening services.
+Kubernetes cluster. It uses the official Kubernetes .NET client to read
+cluster data and renders structured tables for services, deployments,
+ingresses, and pods with actions like restarting deployments or opening
+services.
 
 ## Features
 
@@ -21,7 +22,7 @@ with actions like restarting deployments or opening services.
   - `Components/Pages/Index.razor`: dashboard UI and table logic.
   - `Components/Layout/MainLayout.razor`: header and nav.
   - `Models/ClusterDtos.cs`: DTOs for pods, services, deployments, ingresses, nodes.
-  - `Services/KubectlService.cs`: runs `kubectl` and captures output.
+- `Services/ClusterService.cs`: calls the Kubernetes API via the .NET client.
   - `wwwroot/css/site.css`: custom UI styling.
 - `k8s/`: Kubernetes manifests (namespace, deployment, service, ingress, RBAC, config).
 - `scripts/dev-deploy.sh`: local build/push/apply script for k3d.
@@ -32,7 +33,7 @@ with actions like restarting deployments or opening services.
 
 - .NET SDK 8.x
 - Docker (for container builds)
-- kubectl (in the container, the API executes it)
+- Kubernetes API access (in cluster via service account, or local kubeconfig)
 - A Kubernetes cluster (k3d used by the dev deploy script)
 
 ## Local development
@@ -114,10 +115,11 @@ Health and example:
 
 ## Notes on security and RBAC
 
-The backend runs `kubectl`, so the pod needs RBAC permissions for:
+The backend calls the Kubernetes API, so the pod needs RBAC permissions for:
 
 - list/get pods, services, deployments, ingresses, nodes
-- update deployments for rollout restart
+- get pod logs
+- patch/update deployments for rollout restart
 
 See `k8s/rbac.yaml` and adjust to your cluster policies.
 
