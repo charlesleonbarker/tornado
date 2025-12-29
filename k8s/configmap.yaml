@@ -7,3 +7,4 @@ data:
   ASPNETCORE_ENVIRONMENT: "Development"
   ASPNETCORE_URLS: "http://+:8080"
   SelfBaseUrl: "http://tornado.tornado.svc.cluster.local"
+  ClusterNamespace: "tornado"

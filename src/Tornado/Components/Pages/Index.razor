@@ -7,220 +7,435 @@
 
 <section class="hero">
     <div>
-        <h1>Kubectl API Console</h1>
-        <p>Run common kubectl commands with verbose, structured output.</p>
+        <h1>Tornado Cluster Overview</h1>
+        <p>Live summaries for services, deployments, and pods across all namespaces.</p>
+        <div class="meta">@LastUpdated</div>
     </div>
     <div class="hero-actions">
-        <button class="primary" @onclick="GetNodes">Get Nodes</button>
-        <button class="ghost" @onclick="GetNamespaces">Get Namespaces</button>
+        <button class="primary" @onclick="RefreshAll" disabled="@IsLoading">Refresh</button>
     </div>
 </section>
 
-<section class="grid">
-    <div class="card">
-        <h2>Workloads</h2>
-        <div class="field-row">
-            <label>Namespace</label>
-            <input @bind="NamespaceInput" placeholder="default" />
-        </div>
-        <div class="field-row inline">
-            <label class="checkbox">
-                <input type="checkbox" @bind="AllNamespaces" />
-                All namespaces
-            </label>
-        </div>
-        <div class="button-row">
-            <button @onclick="GetPods">Get Pods</button>
-            <button @onclick="GetServices">Get Services</button>
-            <button @onclick="GetDeployments">Get Deployments</button>
-        </div>
-    </div>
+@if (!string.IsNullOrWhiteSpace(LoadError))
+{
+    <section class="card">
+        <div class="error">@LoadError</div>
+    </section>
+}
 
-    <div class="card">
-        <h2>Describe Pod</h2>
-        <div class="field-row">
-            <label>Pod Name</label>
-            <input @bind="DescribePod" placeholder="tornado-xxxx" />
-        </div>
-        <div class="field-row">
-            <label>Namespace</label>
-            <input @bind="DescribeNamespace" placeholder="default" />
-        </div>
-        <div class="button-row">
-            <button @onclick="DescribePodAsync" disabled="@string.IsNullOrWhiteSpace(DescribePod)">Describe</button>
-        </div>
-    </div>
+@if (!string.IsNullOrWhiteSpace(ActionMessage))
+{
+    <section class="card">
+        <div class="meta">@ActionMessage</div>
+    </section>
+}
 
-    <div class="card">
-        <h2>Pod Logs</h2>
-        <div class="field-row">
-            <label>Pod Name</label>
-            <input @bind="LogsPod" placeholder="tornado-xxxx" />
-        </div>
-        <div class="field-row">
-            <label>Namespace</label>
-            <input @bind="LogsNamespace" placeholder="default" />
-        </div>
-        <div class="field-row">
-            <label>Container</label>
-            <input @bind="LogsContainer" placeholder="optional" />
-        </div>
-        <div class="field-row">
-            <label>Tail</label>
-            <input type="number" min="1" @bind="LogsTail" />
-        </div>
-        <div class="button-row">
-            <button @onclick="GetLogs" disabled="@string.IsNullOrWhiteSpace(LogsPod)">Fetch Logs</button>
-        </div>
-    </div>
-
-    <div class="card">
-        <h2>Quick Checks</h2>
-        <div class="button-row">
-            <button @onclick="GetHealth">Health</button>
-            <button @onclick="GetExample">Example</button>
-        </div>
-        <p class="muted">These call the app endpoints directly, not kubectl.</p>
-    </div>
-</section>
-
-<section class="card output">
-    <div class="output-header">
+<section class="card table-card">
+    <div class="table-header">
         <div>
-            <h2>Response</h2>
-            <div class="meta">@StatusLine</div>
-            <div class="meta">@LastRequest</div>
-        </div>
-        <div class="button-row">
-            <button class="ghost" @onclick="ClearOutput">Clear</button>
+            <h2>Services</h2>
+            <div class="meta">@Services.Count service(s)</div>
         </div>
     </div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+            <tr>
+                <th class="col-namespace">Namespace</th>
+                <th class="col-name">Name</th>
+                <th class="col-small">Type</th>
+                <th class="col-ports">Ports</th>
+                <th class="col-selector">Selector</th>
+                <th class="col-related">Deployments</th>
+                <th class="col-related">Pods</th>
+                <th class="col-open">Open</th>
+            </tr>
+            </thead>
+            <tbody>
+            @foreach (var service in Services)
+            {
+                var deployments = FindDeployments(service).ToList();
+                var pods = FindPods(service).ToList();
+                <tr>
+                    <td>@service.Namespace</td>
+                    <td>@service.Name</td>
+                    <td>@service.Type</td>
+                    <td>@FormatPorts(service.Ports)</td>
+                    <td>@FormatLabels(service.Selector)</td>
+                    <td>@string.Join(", ", deployments.Select(d => d.Name))</td>
+                    <td>@string.Join(", ", pods.Select(p => p.Name))</td>
+                    <td>
+                        @if (!string.IsNullOrWhiteSpace(GetServiceOpenUrl(service)))
+                        {
+                            <a class="button-link" href="@GetServiceOpenUrl(service)" target="_blank" rel="noreferrer">Open</a>
+                        }
+                        else
+                        {
+                            <span class="muted">n/a</span>
+                        }
+                    </td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+</section>
 
-    @if (!string.IsNullOrWhiteSpace(ErrorMessage))
-    {
-        <div class="error">@ErrorMessage</div>
-    }
+<section class="card table-card">
+    <div class="table-header">
+        <div>
+            <h2>Deployments</h2>
+            <div class="meta">@Deployments.Count deployment(s)</div>
+        </div>
+    </div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+            <tr>
+                <th class="col-namespace">Namespace</th>
+                <th class="col-name">Name</th>
+                <th class="col-status">Status</th>
+                <th class="col-action">Restart</th>
+            </tr>
+            </thead>
+            <tbody>
+            @foreach (var deployment in Deployments)
+            {
+                var key = $"{deployment.Namespace}/{deployment.Name}";
+                <tr>
+                    <td>@deployment.Namespace</td>
+                    <td>@deployment.Name</td>
+                    <td>@FormatDeploymentStatus(deployment)</td>
+                    <td>
+                        <button class="ghost"
+                                disabled="@Restarting.Contains(key)"
+                                @onclick="() => RestartDeployment(deployment)">
+                            @(Restarting.Contains(key) ? "Restarting" : "Restart")
+                        </button>
+                    </td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+</section>
 
-    <pre>@ResponseBody</pre>
+<section class="card table-card">
+    <div class="table-header">
+        <div>
+            <h2>Ingresses</h2>
+            <div class="meta">@Ingresses.Count ingress(es)</div>
+        </div>
+    </div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+            <tr>
+                <th class="col-namespace">Namespace</th>
+                <th class="col-name">Name</th>
+                <th class="col-small">Class</th>
+                <th class="col-rules">Rules</th>
+                <th class="col-open">Open</th>
+            </tr>
+            </thead>
+            <tbody>
+            @foreach (var ingress in Ingresses)
+            {
+                <tr>
+                    <td>@ingress.Namespace</td>
+                    <td>@ingress.Name</td>
+                    <td>@(string.IsNullOrWhiteSpace(ingress.ClassName) ? "-" : ingress.ClassName)</td>
+                    <td>@FormatIngressRules(ingress.Rules)</td>
+                    <td>
+                        @if (!string.IsNullOrWhiteSpace(GetIngressOpenUrl(ingress)))
+                        {
+                            <a class="button-link" href="@GetIngressOpenUrl(ingress)" target="_blank" rel="noreferrer">Open</a>
+                        }
+                        else
+                        {
+                            <span class="muted">n/a</span>
+                        }
+                    </td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="card table-card">
+    <div class="table-header">
+        <div>
+            <h2>Pods</h2>
+            <div class="meta">@Pods.Count pod(s)</div>
+        </div>
+    </div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+            <tr>
+                <th class="col-namespace">Namespace</th>
+                <th class="col-name">Name</th>
+                <th class="col-node">Node</th>
+                <th class="col-small">Status</th>
+                <th class="col-small">Ready</th>
+                <th class="col-small">Restarts</th>
+                <th class="col-small">Age</th>
+            </tr>
+            </thead>
+            <tbody>
+            @foreach (var pod in Pods)
+            {
+                <tr>
+                    <td>@pod.Namespace</td>
+                    <td>@pod.Name</td>
+                    <td>@pod.Node</td>
+                    <td>@pod.Status</td>
+                    <td>@pod.Ready</td>
+                    <td>@pod.Restarts</td>
+                    <td>@pod.Age</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
 </section>
 
 @code {
-    private string? NamespaceInput { get; set; } = "tornado";
-    private bool AllNamespaces { get; set; }
-    private string? DescribePod { get; set; }
-    private string? DescribeNamespace { get; set; } = "tornado";
-    private string? LogsPod { get; set; }
-    private string? LogsNamespace { get; set; } = "tornado";
-    private string? LogsContainer { get; set; }
-    private int LogsTail { get; set; } = 100;
+    private readonly HashSet<string> Restarting = new();
+    private List<ServiceSummary> Services { get; set; } = new();
+    private List<DeploymentSummary> Deployments { get; set; } = new();
+    private List<IngressSummary> Ingresses { get; set; } = new();
+    private List<NodeSummary> Nodes { get; set; } = new();
+    private List<PodSummary> Pods { get; set; } = new();
 
-    private string? ResponseBody { get; set; } = "Run a command to see output.";
-    private string? LastRequest { get; set; }
-    private int? ResponseStatus { get; set; }
-    private string? ErrorMessage { get; set; }
+    private bool IsLoading { get; set; }
+    private string? LoadError { get; set; }
+    private string? ActionMessage { get; set; }
+    private string? LastUpdated { get; set; }
 
-    private string StatusLine => ResponseStatus is null ? "" : $"HTTP {ResponseStatus}";
-
-    private Task GetPods() => CallKubectl("/kubectl/pods", new Dictionary<string, string?>
+    protected override async Task OnInitializedAsync()
     {
-        ["namespace"] = AllNamespaces ? null : NamespaceInput,
-        ["allNamespaces"] = AllNamespaces ? "true" : null
-    });
-
-    private Task GetServices() => CallKubectl("/kubectl/services", new Dictionary<string, string?>
-    {
-        ["namespace"] = AllNamespaces ? null : NamespaceInput,
-        ["allNamespaces"] = AllNamespaces ? "true" : null
-    });
-
-    private Task GetDeployments() => CallKubectl("/kubectl/deployments", new Dictionary<string, string?>
-    {
-        ["namespace"] = AllNamespaces ? null : NamespaceInput,
-        ["allNamespaces"] = AllNamespaces ? "true" : null
-    });
-
-    private Task GetNamespaces() => CallKubectl("/kubectl/namespaces");
-
-    private Task GetNodes() => CallKubectl("/kubectl/nodes");
-
-    private Task DescribePodAsync() => CallKubectl($"/kubectl/describe/pod/{Uri.EscapeDataString(DescribePod ?? string.Empty)}",
-        new Dictionary<string, string?>
-        {
-            ["namespace"] = DescribeNamespace
-        });
-
-    private Task GetLogs() => CallKubectl($"/kubectl/logs/{Uri.EscapeDataString(LogsPod ?? string.Empty)}",
-        new Dictionary<string, string?>
-        {
-            ["namespace"] = LogsNamespace,
-            ["container"] = LogsContainer,
-            ["tail"] = LogsTail > 0 ? LogsTail.ToString() : null
-        });
-
-    private Task GetHealth() => CallRaw("/health");
-
-    private Task GetExample() => CallRaw("/example");
-
-    private void ClearOutput()
-    {
-        ResponseBody = "";
-        ResponseStatus = null;
-        LastRequest = null;
-        ErrorMessage = null;
+        await RefreshAll();
     }
 
-    private async Task CallKubectl(string path, Dictionary<string, string?>? parameters = null)
+    private async Task RefreshAll()
     {
-        await CallRaw(BuildUrl(path, parameters));
+        IsLoading = true;
+        LoadError = null;
+        ActionMessage = null;
+
+        try
+        {
+            var podsTask = LoadPods();
+            var servicesTask = LoadServices();
+            var deploymentsTask = LoadDeployments();
+            var ingressesTask = LoadIngresses();
+
+            var nodesTask = LoadNodes();
+
+            await Task.WhenAll(podsTask, servicesTask, deploymentsTask, ingressesTask, nodesTask);
+
+            LastUpdated = $"Last updated {DateTimeOffset.Now:t}";
+        }
+        catch (Exception ex)
+        {
+            LoadError = ex.Message;
+        }
+        finally
+        {
+            IsLoading = false;
+        }
     }
 
-    private async Task CallRaw(string path)
+    private async Task LoadPods()
     {
-        ErrorMessage = null;
+        var data = await GetFromApiAsync<List<PodSummary>>("/cluster/pods");
+        if (data is not null)
+        {
+            Pods = data;
+        }
+    }
+
+    private async Task LoadServices()
+    {
+        var data = await GetFromApiAsync<List<ServiceSummary>>("/cluster/services");
+        if (data is not null)
+        {
+            Services = data;
+        }
+    }
+
+    private async Task LoadDeployments()
+    {
+        var data = await GetFromApiAsync<List<DeploymentSummary>>("/cluster/deployments");
+        if (data is not null)
+        {
+            Deployments = data;
+        }
+    }
+
+    private async Task LoadIngresses()
+    {
+        var data = await GetFromApiAsync<List<IngressSummary>>("/cluster/ingresses");
+        if (data is not null)
+        {
+            Ingresses = data;
+        }
+    }
+
+    private async Task LoadNodes()
+    {
+        var data = await GetFromApiAsync<List<NodeSummary>>("/cluster/nodes");
+        if (data is not null)
+        {
+            Nodes = data;
+        }
+    }
+
+    private async Task RestartDeployment(DeploymentSummary deployment)
+    {
+        var key = $"{deployment.Namespace}/{deployment.Name}";
+        Restarting.Add(key);
+        ActionMessage = null;
+
+        try
+        {
+            var requestUri = BuildRequestUri($"/cluster/deployments/{Uri.EscapeDataString(deployment.Namespace)}/{Uri.EscapeDataString(deployment.Name)}/restart");
+            using var response = await Http.PostAsync(requestUri, null);
+            ActionMessage = response.IsSuccessStatusCode
+                ? $"Restarted deployment {deployment.Name} in {deployment.Namespace}."
+                : $"Failed to restart {deployment.Name}: HTTP {(int)response.StatusCode}.";
+        }
+        catch (Exception ex)
+        {
+            ActionMessage = ex.Message;
+        }
+        finally
+        {
+            Restarting.Remove(key);
+        }
+    }
+
+    private IEnumerable<DeploymentSummary> FindDeployments(ServiceSummary service)
+        => Deployments.Where(d => LabelsMatch(service.Selector, d.Labels));
+
+    private IEnumerable<PodSummary> FindPods(ServiceSummary service)
+        => Pods.Where(p => LabelsMatch(service.Selector, p.Labels));
+
+    private static bool LabelsMatch(IReadOnlyDictionary<string, string> selector, IReadOnlyDictionary<string, string> labels)
+    {
+        if (selector.Count == 0 || labels.Count == 0)
+        {
+            return false;
+        }
+
+        return selector.All(label =>
+            labels.TryGetValue(label.Key, out var value) &&
+            string.Equals(value, label.Value, StringComparison.Ordinal));
+    }
+
+    private async Task<T?> GetFromApiAsync<T>(string path)
+    {
+        var requestUri = BuildRequestUri(path);
+        return await Http.GetFromJsonAsync<T>(requestUri);
+    }
+
+    private Uri BuildRequestUri(string path)
+    {
         var baseUrl = Configuration["SelfBaseUrl"];
         var baseUri = string.IsNullOrWhiteSpace(baseUrl)
             ? new Uri(Navigation.BaseUri)
             : new Uri(baseUrl, UriKind.Absolute);
-        var requestUri = new Uri(baseUri, path);
-        LastRequest = requestUri.ToString();
-
-        try
-        {
-            using var response = await Http.GetAsync(requestUri);
-            ResponseStatus = (int)response.StatusCode;
-            ResponseBody = await response.Content.ReadAsStringAsync();
-        }
-        catch (Exception ex)
-        {
-            ResponseStatus = null;
-            ResponseBody = string.Empty;
-            ErrorMessage = ex.Message;
-        }
+        return new Uri(baseUri, path);
     }
 
-    private static string BuildUrl(string path, Dictionary<string, string?>? parameters)
+    private static string FormatPorts(IReadOnlyList<ServicePortSummary> ports)
     {
-        if (parameters is null || parameters.Count == 0)
+        if (ports.Count == 0)
         {
-            return path;
+            return "";
         }
 
-        var parts = new List<string>();
-        foreach (var (key, value) in parameters)
+        return string.Join(", ", ports.Select(p =>
         {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                continue;
-            }
+            var target = p.TargetPort is null ? "" : $"->{p.TargetPort}";
+            var node = p.NodePort is null ? "" : $" (node {p.NodePort})";
+            return $"{p.Port}{target}{node}/{p.Protocol}";
+        }));
+    }
 
-            parts.Add($"{Uri.EscapeDataString(key)}={Uri.EscapeDataString(value)}");
+    private static string FormatLabels(IReadOnlyDictionary<string, string> labels)
+    {
+        if (labels.Count == 0)
+        {
+            return "";
         }
 
-        if (parts.Count == 0)
+        return string.Join(", ", labels.Select(label => $"{label.Key}={label.Value}"));
+    }
+
+    private static string FormatNullable(int? value) => value?.ToString() ?? "-";
+
+    private static string FormatDeploymentStatus(DeploymentSummary deployment)
+    {
+        var replicas = FormatNullable(deployment.Replicas);
+        var ready = FormatNullable(deployment.Ready);
+        var updated = FormatNullable(deployment.Updated);
+        var available = FormatNullable(deployment.Available);
+        return $"{ready}/{replicas} ready · {updated} updated · {available} available";
+    }
+
+    private static string FormatIngressRules(IReadOnlyList<IngressRuleSummary> rules)
+    {
+        if (rules.Count == 0)
         {
-            return path;
+            return "";
         }
 
-        return $"{path}?{string.Join("&", parts)}";
+        return string.Join("; ", rules.Select(rule =>
+        {
+            var backend = string.IsNullOrWhiteSpace(rule.Backend.ServiceName)
+                ? ""
+                : $"{rule.Backend.ServiceName}{(rule.Backend.ServicePort is null ? "" : $":{rule.Backend.ServicePort}")}";
+            var host = string.IsNullOrWhiteSpace(rule.Host) ? "*" : rule.Host;
+            var path = string.IsNullOrWhiteSpace(rule.Path) ? "/" : rule.Path;
+            return $"{host}{path} → {backend}";
+        }));
+    }
+
+    private static string? GetIngressOpenUrl(IngressSummary ingress)
+    {
+        var rule = ingress.Rules.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r.Host));
+        if (rule is not null)
+        {
+            var path = string.IsNullOrWhiteSpace(rule.Path) ? "/" : rule.Path;
+            return $"http://{rule.Host}{path}";
+        }
+
+        return ingress.ExternalUrls.FirstOrDefault();
+    }
+
+    private string? GetServiceOpenUrl(ServiceSummary service)
+    {
+        var nodePort = service.Ports.FirstOrDefault(p => p.NodePort is not null)?.NodePort;
+        if (nodePort is null)
+        {
+            return null;
+        }
+
+        var node = Nodes.FirstOrDefault();
+        if (node is null)
+        {
+            return null;
+        }
+
+        var host = !string.IsNullOrWhiteSpace(node.ExternalIp) ? node.ExternalIp : node.InternalIp;
+        if (string.IsNullOrWhiteSpace(host))
+        {
+            return null;
+        }
+
+        return $"http://{host}:{nodePort}";
     }
 }

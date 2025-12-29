@@ -120,6 +120,31 @@ body {
     gap: 12px;
 }
 
+.button-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+    border: none;
+    padding: 10px 16px;
+    border-radius: 999px;
+    font-weight: 600;
+    cursor: pointer;
+    background: #f0ece7;
+    color: var(--ink);
+    border: 1px solid transparent;
+}
+
+.button-link:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.button-link.ghost {
+    background: transparent;
+    border: 1px solid var(--line);
+}
+
 .grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -134,6 +159,90 @@ body {
     display: flex;
     flex-direction: column;
     gap: 14px;
+}
+
+.table-card {
+    gap: 16px;
+}
+
+.table-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+}
+
+.table-wrap {
+    overflow-x: auto;
+}
+
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    table-layout: fixed;
+}
+
+.data-table th,
+.data-table td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+}
+
+.data-table thead th {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+}
+
+.data-table tbody tr:hover {
+    background: rgba(201, 75, 75, 0.06);
+}
+
+.col-namespace {
+    width: 140px;
+}
+
+.col-name {
+    width: 200px;
+}
+
+.col-small {
+    width: 90px;
+}
+
+.col-node {
+    width: 160px;
+}
+
+.col-ports {
+    width: 160px;
+}
+
+.col-selector {
+    width: 200px;
+}
+
+.col-related {
+    width: 180px;
+}
+
+.col-open {
+    width: 130px;
+}
+
+.col-status {
+    width: 220px;
+}
+
+.col-action {
+    width: 120px;
+}
+
+.col-rules {
+    width: 320px;
 }
 
 .card h2 {
