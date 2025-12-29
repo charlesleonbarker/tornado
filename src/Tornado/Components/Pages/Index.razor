@@ -1,0 +1,226 @@
+@page "/"
+@rendermode Microsoft.AspNetCore.Components.Web.RenderMode.InteractiveServer
+
+@inject IConfiguration Configuration
+@inject HttpClient Http
+@inject NavigationManager Navigation
+
+<section class="hero">
+    <div>
+        <h1>Kubectl API Console</h1>
+        <p>Run common kubectl commands with verbose, structured output.</p>
+    </div>
+    <div class="hero-actions">
+        <button class="primary" @onclick="GetNodes">Get Nodes</button>
+        <button class="ghost" @onclick="GetNamespaces">Get Namespaces</button>
+    </div>
+</section>
+
+<section class="grid">
+    <div class="card">
+        <h2>Workloads</h2>
+        <div class="field-row">
+            <label>Namespace</label>
+            <input @bind="NamespaceInput" placeholder="default" />
+        </div>
+        <div class="field-row inline">
+            <label class="checkbox">
+                <input type="checkbox" @bind="AllNamespaces" />
+                All namespaces
+            </label>
+        </div>
+        <div class="button-row">
+            <button @onclick="GetPods">Get Pods</button>
+            <button @onclick="GetServices">Get Services</button>
+            <button @onclick="GetDeployments">Get Deployments</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Describe Pod</h2>
+        <div class="field-row">
+            <label>Pod Name</label>
+            <input @bind="DescribePod" placeholder="tornado-xxxx" />
+        </div>
+        <div class="field-row">
+            <label>Namespace</label>
+            <input @bind="DescribeNamespace" placeholder="default" />
+        </div>
+        <div class="button-row">
+            <button @onclick="DescribePodAsync" disabled="@string.IsNullOrWhiteSpace(DescribePod)">Describe</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Pod Logs</h2>
+        <div class="field-row">
+            <label>Pod Name</label>
+            <input @bind="LogsPod" placeholder="tornado-xxxx" />
+        </div>
+        <div class="field-row">
+            <label>Namespace</label>
+            <input @bind="LogsNamespace" placeholder="default" />
+        </div>
+        <div class="field-row">
+            <label>Container</label>
+            <input @bind="LogsContainer" placeholder="optional" />
+        </div>
+        <div class="field-row">
+            <label>Tail</label>
+            <input type="number" min="1" @bind="LogsTail" />
+        </div>
+        <div class="button-row">
+            <button @onclick="GetLogs" disabled="@string.IsNullOrWhiteSpace(LogsPod)">Fetch Logs</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Quick Checks</h2>
+        <div class="button-row">
+            <button @onclick="GetHealth">Health</button>
+            <button @onclick="GetExample">Example</button>
+        </div>
+        <p class="muted">These call the app endpoints directly, not kubectl.</p>
+    </div>
+</section>
+
+<section class="card output">
+    <div class="output-header">
+        <div>
+            <h2>Response</h2>
+            <div class="meta">@StatusLine</div>
+            <div class="meta">@LastRequest</div>
+        </div>
+        <div class="button-row">
+            <button class="ghost" @onclick="ClearOutput">Clear</button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(ErrorMessage))
+    {
+        <div class="error">@ErrorMessage</div>
+    }
+
+    <pre>@ResponseBody</pre>
+</section>
+
+@code {
+    private string? NamespaceInput { get; set; } = "tornado";
+    private bool AllNamespaces { get; set; }
+    private string? DescribePod { get; set; }
+    private string? DescribeNamespace { get; set; } = "tornado";
+    private string? LogsPod { get; set; }
+    private string? LogsNamespace { get; set; } = "tornado";
+    private string? LogsContainer { get; set; }
+    private int LogsTail { get; set; } = 100;
+
+    private string? ResponseBody { get; set; } = "Run a command to see output.";
+    private string? LastRequest { get; set; }
+    private int? ResponseStatus { get; set; }
+    private string? ErrorMessage { get; set; }
+
+    private string StatusLine => ResponseStatus is null ? "" : $"HTTP {ResponseStatus}";
+
+    private Task GetPods() => CallKubectl("/kubectl/pods", new Dictionary<string, string?>
+    {
+        ["namespace"] = AllNamespaces ? null : NamespaceInput,
+        ["allNamespaces"] = AllNamespaces ? "true" : null
+    });
+
+    private Task GetServices() => CallKubectl("/kubectl/services", new Dictionary<string, string?>
+    {
+        ["namespace"] = AllNamespaces ? null : NamespaceInput,
+        ["allNamespaces"] = AllNamespaces ? "true" : null
+    });
+
+    private Task GetDeployments() => CallKubectl("/kubectl/deployments", new Dictionary<string, string?>
+    {
+        ["namespace"] = AllNamespaces ? null : NamespaceInput,
+        ["allNamespaces"] = AllNamespaces ? "true" : null
+    });
+
+    private Task GetNamespaces() => CallKubectl("/kubectl/namespaces");
+
+    private Task GetNodes() => CallKubectl("/kubectl/nodes");
+
+    private Task DescribePodAsync() => CallKubectl($"/kubectl/describe/pod/{Uri.EscapeDataString(DescribePod ?? string.Empty)}",
+        new Dictionary<string, string?>
+        {
+            ["namespace"] = DescribeNamespace
+        });
+
+    private Task GetLogs() => CallKubectl($"/kubectl/logs/{Uri.EscapeDataString(LogsPod ?? string.Empty)}",
+        new Dictionary<string, string?>
+        {
+            ["namespace"] = LogsNamespace,
+            ["container"] = LogsContainer,
+            ["tail"] = LogsTail > 0 ? LogsTail.ToString() : null
+        });
+
+    private Task GetHealth() => CallRaw("/health");
+
+    private Task GetExample() => CallRaw("/example");
+
+    private void ClearOutput()
+    {
+        ResponseBody = "";
+        ResponseStatus = null;
+        LastRequest = null;
+        ErrorMessage = null;
+    }
+
+    private async Task CallKubectl(string path, Dictionary<string, string?>? parameters = null)
+    {
+        await CallRaw(BuildUrl(path, parameters));
+    }
+
+    private async Task CallRaw(string path)
+    {
+        ErrorMessage = null;
+        var baseUrl = Configuration["SelfBaseUrl"];
+        var baseUri = string.IsNullOrWhiteSpace(baseUrl)
+            ? new Uri(Navigation.BaseUri)
+            : new Uri(baseUrl, UriKind.Absolute);
+        var requestUri = new Uri(baseUri, path);
+        LastRequest = requestUri.ToString();
+
+        try
+        {
+            using var response = await Http.GetAsync(requestUri);
+            ResponseStatus = (int)response.StatusCode;
+            ResponseBody = await response.Content.ReadAsStringAsync();
+        }
+        catch (Exception ex)
+        {
+            ResponseStatus = null;
+            ResponseBody = string.Empty;
+            ErrorMessage = ex.Message;
+        }
+    }
+
+    private static string BuildUrl(string path, Dictionary<string, string?>? parameters)
+    {
+        if (parameters is null || parameters.Count == 0)
+        {
+            return path;
+        }
+
+        var parts = new List<string>();
+        foreach (var (key, value) in parameters)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            parts.Add($"{Uri.EscapeDataString(key)}={Uri.EscapeDataString(value)}");
+        }
+
+        if (parts.Count == 0)
+        {
+            return path;
+        }
+
+        return $"{path}?{string.Join("&", parts)}";
+    }
+}

@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tornado
+  namespace: tornado
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tornado
+  template:
+    metadata:
+      labels:
+        app: tornado
+    spec:
+      containers:
+        - name: tornado
+          image: k3d-tornado-reg:5000/tornado:dev
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: tornado-config
+            - secretRef:
+                name: tornado-secrets
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

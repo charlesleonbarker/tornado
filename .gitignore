@@ -1,0 +1,57 @@
+# Build outputs
+**/bin/
+**/obj/
+**/out/
+**/TestResults/
+**/artifacts/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Rider / JetBrains
+.idea/
+*.sln.iml
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# NuGet
+**/packages/
+*.nupkg
+*.snupkg
+**/project.assets.json
+**/project.nuget.cache
+**/*.nuget.dgspec.json
+**/*.nuget.g.props
+**/*.nuget.g.targets
+
+# Dotnet local caches
+.dotnet/
+.home/
+
+# Docker
+**/*docker-compose.override.yml
+
+# Local env files
+.env
+.env.*
+
+# Coverage
+**/coverage/
+**/coverage.*.xml
+**/coverage.json
+**/coverage.cobertura.xml
+
+# Kubernetes local files
+**/*.kubeconfig
+**/kubeconfig
