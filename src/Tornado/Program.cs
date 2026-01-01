@@ -1,4 +1,5 @@
 using k8s;
+using Microsoft.AspNetCore.DataProtection;
 using Tornado.Components;
 using Tornado.Services;
 
@@ -24,6 +25,14 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
+
+var dataProtectionKeysPath = builder.Configuration["DataProtection__KeysPath"];
+if (!string.IsNullOrWhiteSpace(dataProtectionKeysPath))
+{
+    builder.Services.AddDataProtection()
+        .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeysPath))
+        .SetApplicationName("Tornado");
+}
 
 var app = builder.Build();
 

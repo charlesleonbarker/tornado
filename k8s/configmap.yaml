@@ -6,4 +6,5 @@ metadata:
 data:
   ASPNETCORE_ENVIRONMENT: "Production"
   ASPNETCORE_URLS: "http://+:8080"
+  DataProtection__KeysPath: "/var/tornado-keys"
   SelfBaseUrl: "http://tornado.tornado.svc.cluster.local"

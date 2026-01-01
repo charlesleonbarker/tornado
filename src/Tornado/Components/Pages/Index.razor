@@ -474,8 +474,9 @@
             return;
         }
 
+        var hubUri = BuildRequestUri(ClusterHub.HubRoute);
         _clusterHub = new HubConnectionBuilder()
-            .WithUrl(Navigation.ToAbsoluteUri(ClusterHub.HubRoute))
+            .WithUrl(hubUri)
             .WithAutomaticReconnect()
             .Build();
 
