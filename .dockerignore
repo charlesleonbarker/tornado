@@ -1,0 +1,33 @@
+**/bin/
+**/obj/
+**/out/
+**/TestResults/
+**/artifacts/
+
+# User/IDE
+.git/
+.idea/
+.vscode/
+.DS_Store
+
+# NuGet outputs
+**/packages/
+*.nupkg
+*.snupkg
+**/project.assets.json
+**/project.nuget.cache
+**/*.nuget.dgspec.json
+**/*.nuget.g.props
+**/*.nuget.g.targets
+
+# Local caches
+.dotnet/
+.home/
+
+# Env and coverage
+.env
+.env.*
+**/coverage/
+**/coverage.*.xml
+**/coverage.json
+**/coverage.cobertura.xml

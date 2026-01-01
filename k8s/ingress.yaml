@@ -3,14 +3,10 @@ kind: Ingress
 metadata:
   name: tornado
   namespace: tornado
-  annotations:
-    traefik.ingress.kubernetes.io/service.sticky.cookie: "true"
-    traefik.ingress.kubernetes.io/service.sticky.cookie.name: "tornado_affinity"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
 spec:
-  ingressClassName: traefik
+  ingressClassName: nginx
   rules:
-    - host: tornado.local
+    - host: tornado.example.com
       http:
         paths:
           - path: /

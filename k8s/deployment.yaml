@@ -15,15 +15,13 @@ spec:
     spec:
       containers:
         - name: tornado
-          image: k3d-tornado-reg:5000/tornado:dev
+          image: ghcr.io/charlesleonbarker/tornado:main
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
           envFrom:
             - configMapRef:
                 name: tornado-config
-            - secretRef:
-                name: tornado-secrets
           readinessProbe:
             httpGet:
               path: /health

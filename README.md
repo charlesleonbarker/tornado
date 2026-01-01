@@ -1,19 +1,19 @@
 # Tornado
 
-Tornado is a minimal ASP.NET 8 + Blazor Server dashboard for inspecting a
-Kubernetes cluster. It uses the official Kubernetes .NET client to read
-cluster data and renders structured tables for services, deployments,
-ingresses, and pods with actions like restarting deployments or opening
-services.
+Tornado is an ASP.NET 8 + Blazor Server console for visual Kubernetes
+workload insights. It uses the official Kubernetes .NET client to read
+cluster data, streams live updates via SignalR, and renders structured
+tables plus a rich describe modal for core resources.
 
 ## Features
 
-- Live cluster summaries for services, deployments, ingresses, and pods
+- Live cluster summaries for services, deployments, ingresses, pods, and nodes
 - Cross-table correlation using Kubernetes label selectors
-- Deployment restart action from the UI
+- Restart workloads from the UI with confirmation
 - Open service and ingress endpoints in new tabs
 - Optional namespace scoping via environment variable
-- K8s-ready manifests and a local `k3d` dev deploy script
+- Describe modal with summary/sections, search, and raw YAML/JSON
+
 
 ## Project layout
 
@@ -25,7 +25,6 @@ services.
 - `Services/ClusterService.cs`: calls the Kubernetes API via the .NET client.
   - `wwwroot/css/site.css`: custom UI styling.
 - `k8s/`: Kubernetes manifests (namespace, deployment, service, ingress, RBAC, config).
-- `scripts/dev-deploy.sh`: local build/push/apply script for k3d.
 - `Dockerfile`: container build for the app.
 - `global.json`: pins the .NET SDK used by the repo.
 
@@ -34,7 +33,7 @@ services.
 - .NET SDK 8.x
 - Docker (for container builds)
 - Kubernetes API access (in cluster via service account, or local kubeconfig)
-- A Kubernetes cluster (k3d used by the dev deploy script)
+- A Kubernetes cluster
 
 ## Local development
 
@@ -59,22 +58,14 @@ Apply them:
 kubectl apply -f k8s/
 ```
 
-If you use the dev deploy script, see below.
+Image used by default:
 
-## Dev deploy (k3d)
-
-The script builds the Docker image, pushes to a local registry, applies
-manifests, and restarts the deployment:
-
-```bash
-./scripts/dev-deploy.sh
+```
+ghcr.io/charlesleonbarker/tornado:main
 ```
 
-The script expects:
-
-- a running Docker daemon
-- `k3d` and `kubectl` installed
-- a k3d cluster named `tornado` with a registry `tornado-reg` on port 5001
+Manifests include placeholder values (e.g., ingress hostnames, connection strings).
+Update them to match your cluster before applying.
 
 ## Configuration
 
@@ -95,15 +86,22 @@ Cluster summary APIs (return JSON):
 - `GET /cluster/deployments`
 - `GET /cluster/ingresses`
 - `GET /cluster/nodes`
+- `GET /cluster/services/{namespace}/{name}/endpoints`
+- `GET /cluster/deployments/{namespace}/{name}/replicasets`
 
 Actions:
 
 - `POST /cluster/deployments/{namespace}/{name}/restart`
+- `POST /cluster/workloads/{kind}/{namespace}/{name}/restart`
 
 Health and example:
 
 - `GET /health`
 - `GET /example`
+
+Live updates:
+
+- SignalR hub at `/hubs/cluster`
 
 ## UI behavior
 
@@ -117,7 +115,7 @@ Health and example:
 
 The backend calls the Kubernetes API, so the pod needs RBAC permissions for:
 
-- list/get pods, services, deployments, ingresses, nodes
+- list/get pods, services, deployments, ingresses, nodes, endpoints, endpoint slices
 - get pod logs
 - patch/update deployments for rollout restart
 

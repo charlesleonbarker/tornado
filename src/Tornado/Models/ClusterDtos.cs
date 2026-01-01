@@ -21,6 +21,15 @@ public sealed record DeploymentSummary(
     IReadOnlyDictionary<string, string> Labels
 );
 
+public sealed record WorkloadSummary(
+    string Kind,
+    string Namespace,
+    string Name,
+    int? Desired,
+    int? Ready,
+    IReadOnlyDictionary<string, string> Labels
+);
+
 public sealed record ServicePortSummary(
     int Port,
     int? TargetPort,
@@ -61,4 +70,12 @@ public sealed record NodeSummary(
     string Name,
     string InternalIp,
     string ExternalIp
+);
+
+public sealed record ClusterSnapshot(
+    IReadOnlyList<PodSummary> Pods,
+    IReadOnlyList<ServiceSummary> Services,
+    IReadOnlyList<WorkloadSummary> Workloads,
+    IReadOnlyList<IngressSummary> Ingresses,
+    IReadOnlyList<NodeSummary> Nodes
 );

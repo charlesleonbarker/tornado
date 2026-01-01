@@ -1,0 +1,2118 @@
+@namespace Tornado.Components.Describe
+@using System.Text.Json
+@using Tornado.Models
+@inject HttpClient Http
+@inject NavigationManager Navigation
+@inject IJSRuntime Js
+
+@if (IsOpen)
+{
+    <div class="modal-backdrop" @onclick="Close">
+        <div class="modal describe-modal" @onclick:stopPropagation tabindex="0" @onkeydown="HandleKeyDown">
+            <div class="describe-header">
+                <div class="describe-title">
+                    <div class="kind-icon">@GetKindIcon(DisplayKind)</div>
+                    <div>
+                        <div class="describe-name">@DisplayName</div>
+                        <div class="describe-subline">
+                            <span class="namespace-badge">@DisplayNamespace</span>
+                            <span class="status-pill @StatusClass">@StatusLabel</span>
+                            <span class="meta">@DisplayApiVersion</span>
+                            <span class="meta">@DisplayUid</span>
+                            <span class="meta">@DisplayCreatedAt</span>
+                            @if (!string.IsNullOrWhiteSpace(DisplayCluster))
+                            {
+                                <span class="meta">@DisplayCluster</span>
+                            }
+                        </div>
+                    </div>
+                </div>
+                <div class="describe-actions">
+                    <input class="describe-search"
+                           placeholder="Search"
+                           @bind="SearchQuery"
+                           @bind:event="oninput"
+                           @ref="SearchRef" />
+                    <button class="ghost pill-action" @onclick="CopyName">Copy name</button>
+                    <button class="ghost pill-action" @onclick="CopyYaml">Copy YAML</button>
+                    <button class="ghost pill-action" @onclick="CopyJson">Copy JSON</button>
+                    <button class="ghost pill-action" @onclick="CopyKubectl">Copy kubectl</button>
+                    @if (IsPod)
+                    {
+                        <button class="ghost pill-action" @onclick="OpenLogs">Logs</button>
+                    }
+                    <button class="ghost pill-action" @onclick="ScrollToEvents">Events</button>
+                    <button class="ghost pill-action" @onclick="ScrollToRaw">YAML</button>
+                    @if (IsWorkload)
+                    {
+                        <button class="ghost danger pill-action" @onclick="Restart">Restart</button>
+                    }
+                    <button class="ghost pill-action" @onclick="Close">Close</button>
+                </div>
+            </div>
+            <div class="describe-body">
+                @if (!string.IsNullOrWhiteSpace(LoadError))
+                {
+                    <div class="error">@LoadError</div>
+                }
+                else if (Resource is null)
+                {
+                    <div class="meta">Loading resource...</div>
+                }
+                else
+                {
+                    <div class="describe-layout">
+                        <nav class="describe-nav" @ref="DescribeNavRef">
+                            @foreach (var item in SectionNavItems)
+                            {
+                                <button class="describe-nav-item" data-section="@item.Id" @onclick="() => ScrollToSection(item.Id)">
+                                    @item.Label
+                                </button>
+                            }
+                        </nav>
+                        <div class="describe-content" @ref="DescribeBodyRef">
+                            <div class="describe-summary" id="@SummarySectionId">
+                                @foreach (var item in SummaryItems)
+                                {
+                                    <div class="summary-card">
+                                        <span class="summary-label">@item.Label</span>
+                                        <span class="summary-value">@((MarkupString)Highlight(item.Value))</span>
+                                    </div>
+                                }
+                            </div>
+
+                            <details class="describe-section" open id="@IdentitySectionId">
+                                <summary>Identity</summary>
+                                <div class="describe-section-body">
+                                    <div class="kv-grid">
+                                        <div class="kv-row">
+                                            <span class="kv-label">Name</span>
+                                            <span class="kv-value">@Resource.Name</span>
+                                        </div>
+                                        <div class="kv-row">
+                                            <span class="kv-label">Namespace</span>
+                                            <span class="kv-value">@DisplayNamespace</span>
+                                        </div>
+                                        <div class="kv-row">
+                                            <span class="kv-label">Kind</span>
+                                            <span class="kv-value">@Resource.Kind</span>
+                                        </div>
+                                        <div class="kv-row">
+                                            <span class="kv-label">UID</span>
+                                            <span class="kv-value">@Resource.Uid</span>
+                                        </div>
+                                    </div>
+                                    <div class="chip-block">
+                                        <div class="chip-title">Labels</div>
+                                        @RenderChips(Resource.Labels, _showAllLabels, ToggleLabels)
+                                    </div>
+                                    <div class="chip-block">
+                                        <div class="chip-title">Annotations</div>
+                                        @RenderChips(Resource.Annotations, _showAllAnnotations, ToggleAnnotations)
+                                    </div>
+                                </div>
+                            </details>
+
+                            <details class="describe-section" open id="@StatusSectionId">
+                                <summary>Status</summary>
+                                <div class="describe-section-body">
+                                    <DescribeTable Columns="ConditionColumns"
+                                                   Rows="FilterTableRows(ConditionRows)"
+                                                   EmptyText="No status conditions."
+                                                   Highlighter="Highlight"
+                                                   OnOpenResource="OnOpenResource" />
+                                </div>
+                            </details>
+
+                            <details class="describe-section" open id="@SpecSectionId">
+                                <summary>Spec</summary>
+                                <div class="describe-section-body">
+                                    <div class="kv-grid">
+                                        @foreach (var row in FilterRows(SpecRows))
+                                        {
+                                            <div class="kv-row">
+                                                <span class="kv-label">@row.Label</span>
+                                                <span class="kv-value">@((MarkupString)Highlight(row.Value))</span>
+                                            </div>
+                                        }
+                                        @if (SpecRows.Count == 0)
+                                        {
+                                            <div class="empty-row">No spec details available.</div>
+                                        }
+                                    </div>
+                                </div>
+                            </details>
+
+                            <details class="describe-section" open id="@RelationshipsSectionId">
+                                <summary>Relationships</summary>
+                                <div class="describe-section-body">
+                                    @if (Resource.Owners.Count == 0)
+                                    {
+                                        <div class="empty-row">No owner references.</div>
+                                    }
+                                    else
+                                    {
+                                        <div class="owner-chain">
+                                            @foreach (var owner in Resource.Owners)
+                                            {
+                                                <button class="link-button" @onclick="() => OpenOwner(owner)">
+                                                    @owner.Kind/@owner.Name
+                                                </button>
+                                            }
+                                        </div>
+                                    }
+                                    @if (RelatedPodRows.Count > 0)
+                                    {
+                                        <div class="section-subtitle">Related Pods</div>
+                                        <DescribeTable Columns="RelatedPodColumns"
+                                                       Rows="FilterTableRows(RelatedPodRows)"
+                                                       EmptyText="No related pods."
+                                                       Highlighter="Highlight"
+                                                       OnOpenResource="OnOpenResource" />
+                                    }
+                                </div>
+                            </details>
+
+                            @if (IsWorkload)
+                            {
+                                <details class="describe-section" open id="@PodsSectionId">
+                                    <summary>Pods</summary>
+                                    <div class="describe-section-body">
+                                        <DescribeTable Columns="RelatedPodColumns"
+                                                       Rows="FilterTableRows(RelatedPodRows)"
+                                                       EmptyText="No pods found."
+                                                       Highlighter="Highlight"
+                                                       OnOpenResource="OnOpenResource" />
+                                    </div>
+                                </details>
+                            }
+
+                            @if (Resource?.Kind == "Pod" || IsWorkload)
+                            {
+                                <details class="describe-section" open id="@ContainersSectionId">
+                                    <summary>@(IsWorkload ? "Template containers" : "Containers")</summary>
+                                    <div class="describe-section-body">
+                                        <DescribeTable Columns="ContainerColumns"
+                                                       Rows="FilterTableRows(ContainerRows)"
+                                                       EmptyText="No containers."
+                                                       Highlighter="Highlight"
+                                                       OnOpenResource="OnOpenResource" />
+                                    </div>
+                                </details>
+                            }
+
+                            @if (Resource?.Kind == "Pod" || IsWorkload)
+                            {
+                                <details class="describe-section" open id="@ProbesSectionId">
+                                    <summary>Probes</summary>
+                                    <div class="describe-section-body">
+                                        <DescribeTable Columns="ProbeColumns"
+                                                       Rows="FilterTableRows(ProbeRows)"
+                                                       EmptyText="No probes."
+                                                       Highlighter="Highlight"
+                                                       OnOpenResource="OnOpenResource" />
+                                    </div>
+                                </details>
+                            }
+
+                            @if (Resource?.Kind == "Pod" || IsWorkload)
+                            {
+                                <details class="describe-section" open id="@ResourcesSectionId">
+                                    <summary>Resources</summary>
+                                    <div class="describe-section-body">
+                                        <DescribeTable Columns="ResourceColumns"
+                                                       Rows="FilterTableRows(ResourceRows)"
+                                                       EmptyText="No resources configured."
+                                                       Highlighter="Highlight"
+                                                       OnOpenResource="OnOpenResource" />
+                                    </div>
+                                </details>
+                            }
+
+                            @if (Resource?.Kind == "Pod")
+                            {
+                                <details class="describe-section" open id="@VolumesSectionId">
+                                    <summary>Volumes</summary>
+                                    <div class="describe-section-body">
+                                        <DescribeTable Columns="VolumeColumns"
+                                                       Rows="FilterTableRows(VolumeRows)"
+                                                       EmptyText="No volumes."
+                                                       Highlighter="Highlight"
+                                                       OnOpenResource="OnOpenResource" />
+                                    </div>
+                                </details>
+                            }
+
+                            @if (Resource?.Kind == "Pod")
+                            {
+                                <details class="describe-section" open id="@NetworkingSectionId">
+                                    <summary>Networking</summary>
+                                    <div class="describe-section-body">
+                                        <div class="kv-grid">
+                                            @foreach (var row in FilterRows(NetworkingRows))
+                                            {
+                                                <div class="kv-row">
+                                                    <span class="kv-label">@row.Label</span>
+                                                    <span class="kv-value">@((MarkupString)Highlight(row.Value))</span>
+                                                </div>
+                                            }
+                                            @if (NetworkingRows.Count == 0)
+                                            {
+                                                <div class="empty-row">No networking details.</div>
+                                            }
+                                        </div>
+                                    </div>
+                                </details>
+                            }
+
+                            @if (Resource?.Kind == "Pod")
+                            {
+                                <details class="describe-section" open id="@SecuritySectionId">
+                                    <summary>Security</summary>
+                                    <div class="describe-section-body">
+                                        <div class="kv-grid">
+                                            @foreach (var row in FilterRows(SecurityRows))
+                                            {
+                                                <div class="kv-row">
+                                                    <span class="kv-label">@row.Label</span>
+                                                    <span class="kv-value">@((MarkupString)Highlight(row.Value))</span>
+                                                </div>
+                                            }
+                                            @if (SecurityRows.Count == 0)
+                                            {
+                                                <div class="empty-row">No security context.</div>
+                                            }
+                                        </div>
+                                    </div>
+                                </details>
+                            }
+
+                            @if (Resource?.Kind == "Pod")
+                            {
+                                <details class="describe-section" open id="@QuickLinksSectionId">
+                                    <summary>Quick links</summary>
+                                    <div class="describe-section-body">
+                                        <div class="quick-links">
+                                            <button class="ghost pill-action" @onclick="OpenLogs">Logs</button>
+                                            @if (!string.IsNullOrWhiteSpace(GetPodNodeName()))
+                                            {
+                                                <button class="ghost pill-action" @onclick="OpenPodNode">Node</button>
+                                            }
+                                            @if (Resource.Owners.Count > 0)
+                                            {
+                                                <button class="ghost pill-action" @onclick="() => OpenOwner(Resource.Owners[0])">Owner</button>
+                                            }
+                                        </div>
+                                    </div>
+                                </details>
+                            }
+
+                            @if (IsWorkload)
+                            {
+                                <details class="describe-section" open id="@RolloutSectionId">
+                                    <summary>Rollout</summary>
+                                    <div class="describe-section-body">
+                                        <div class="kv-grid">
+                                            @foreach (var row in FilterRows(RolloutRows))
+                                            {
+                                                <div class="kv-row">
+                                                    <span class="kv-label">@row.Label</span>
+                                                    <span class="kv-value">@((MarkupString)Highlight(row.Value))</span>
+                                                </div>
+                                            }
+                                            @if (RolloutRows.Count == 0)
+                                            {
+                                                <div class="empty-row">No rollout details.</div>
+                                            }
+                                        </div>
+                                        @if (ReplicaSetRows.Count > 0)
+                                        {
+                                            <div class="section-subtitle">ReplicaSets</div>
+                                            <DescribeTable Columns="ReplicaSetColumns"
+                                                           Rows="FilterTableRows(ReplicaSetRows)"
+                                                           EmptyText="No ReplicaSets found."
+                                                           Highlighter="Highlight"
+                                                           OnOpenResource="OnOpenResource" />
+                                        }
+                                    </div>
+                                </details>
+                            }
+
+                            @if (Resource?.Kind == "Service")
+                            {
+                                <details class="describe-section" open id="@PortsSectionId">
+                                    <summary>Ports</summary>
+                                    <div class="describe-section-body">
+                                        <DescribeTable Columns="ServicePortColumns"
+                                                       Rows="FilterTableRows(ServicePortRows)"
+                                                       EmptyText="No ports configured."
+                                                       Highlighter="Highlight"
+                                                       OnOpenResource="OnOpenResource" />
+                                    </div>
+                                </details>
+                            }
+
+                            @if (Resource?.Kind == "Service")
+                            {
+                                <details class="describe-section" open id="@EndpointsSectionId">
+                                    <summary>Endpoints</summary>
+                                    <div class="describe-section-body">
+                                        <DescribeTable Columns="EndpointColumns"
+                                                       Rows="FilterTableRows(EndpointRows)"
+                                                       EmptyText="No endpoints available."
+                                                       Highlighter="Highlight"
+                                                       OnOpenResource="OnOpenResource" />
+                                    </div>
+                                </details>
+                            }
+
+                            @if (Resource?.Kind == "Ingress")
+                            {
+                                <details class="describe-section" open id="@RulesSectionId">
+                                    <summary>Rules</summary>
+                                    <div class="describe-section-body">
+                                        <DescribeTable Columns="IngressRuleColumns"
+                                                       Rows="FilterTableRows(IngressRuleRows)"
+                                                       EmptyText="No rules configured."
+                                                       Highlighter="Highlight"
+                                                       OnOpenResource="OnOpenResource" />
+                                    </div>
+                                </details>
+
+                                <details class="describe-section" open id="@BackendHealthSectionId">
+                                    <summary>Backend health</summary>
+                                    <div class="describe-section-body">
+                                        <div class="empty-row">Backend health not available.</div>
+                                    </div>
+                                </details>
+                            }
+
+                            @if (Resource?.Kind == "Node")
+                            {
+                                <details class="describe-section" open id="@AddressesSectionId">
+                                    <summary>Addresses</summary>
+                                    <div class="describe-section-body">
+                                        <DescribeTable Columns="NodeAddressColumns"
+                                                       Rows="FilterTableRows(NodeAddressRows)"
+                                                       EmptyText="No addresses."
+                                                       Highlighter="Highlight"
+                                                       OnOpenResource="OnOpenResource" />
+                                    </div>
+                                </details>
+                            }
+
+                            @if (Resource?.Kind == "Node")
+                            {
+                                <details class="describe-section" open id="@NodePodsSectionId">
+                                    <summary>Pods on node</summary>
+                                    <div class="describe-section-body">
+                                        <DescribeTable Columns="NodePodColumns"
+                                                       Rows="FilterTableRows(NodePodRows)"
+                                                       EmptyText="No pods scheduled."
+                                                       Highlighter="Highlight"
+                                                       OnOpenResource="OnOpenResource" />
+                                    </div>
+                                </details>
+                            }
+
+                            <details class="describe-section" open id="@EventsSectionId">
+                                <summary>Events</summary>
+                                <div class="describe-section-body">
+                                    <div class="event-filters">
+                                        <label class="control-label inline">
+                                            Type
+                                            <input type="text" @bind="EventTypeFilter" @bind:event="oninput" />
+                                        </label>
+                                        <label class="control-label inline">
+                                            Reason
+                                            <input type="text" @bind="EventReasonFilter" @bind:event="oninput" />
+                                        </label>
+                                    </div>
+                                    <DescribeTable Columns="EventColumns"
+                                                   Rows="FilteredEventRows"
+                                                   EmptyText="No events."
+                                                   Highlighter="Highlight"
+                                                   OnOpenResource="OnOpenResource" />
+                                </div>
+                            </details>
+
+                            <details class="describe-section" id="@RawSectionId">
+                                <summary>Raw</summary>
+                                <div class="describe-section-body">
+                                    <div class="raw-tabs">
+                                        <button class="ghost pill-action @(RawTab == RawTabYaml ? "is-active" : "")" @onclick="() => SetRawTab(RawTabYaml)">YAML</button>
+                                        <button class="ghost pill-action @(RawTab == RawTabJson ? "is-active" : "")" @onclick="() => SetRawTab(RawTabJson)">JSON</button>
+                                        <input class="raw-search" placeholder="Search raw" @bind="RawSearchQuery" @bind:event="oninput" />
+                                    </div>
+                                    @if (RawTab == "yaml")
+                                    {
+                                        <pre>@((MarkupString)HighlightRaw(Resource!.RawYaml))</pre>
+                                    }
+                                    else
+                                    {
+                                        <pre>@((MarkupString)HighlightRaw(Resource!.RawJson))</pre>
+                                    }
+                                </div>
+                            </details>
+                        </div>
+                    </div>
+                }
+            </div>
+            <div class="describe-footer">
+                <button class="ghost" @onclick="Close">Close</button>
+                <button class="ghost pill-action" disabled>Pin</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+    [Parameter] public string? Kind { get; set; }
+    [Parameter] public string? Namespace { get; set; }
+    [Parameter] public string? Name { get; set; }
+    [Parameter] public IReadOnlyList<PodSummary> Pods { get; set; } = Array.Empty<PodSummary>();
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<ResourceRef> OnOpenResource { get; set; }
+    [Parameter] public EventCallback<ResourceRef> OnOpenLogs { get; set; }
+
+    private DescribeResource? Resource { get; set; }
+    private ResourceRef? ResourceRef { get; set; }
+    private JsonDocument? ResourceJson { get; set; }
+    private string? LoadError { get; set; }
+    private string SearchQuery { get; set; } = "";
+    private string RawSearchQuery { get; set; } = "";
+    private string RawTab { get; set; } = RawTabYaml;
+    private const string RawTabYaml = "yaml";
+    private const string RawTabJson = "json";
+    private string EventTypeFilter { get; set; } = "";
+    private string EventReasonFilter { get; set; } = "";
+    private readonly List<SummaryItem> SummaryItems = new();
+    private readonly List<SpecRow> SpecRows = new();
+    private readonly List<SpecRow> NetworkingRows = new();
+    private readonly List<SpecRow> SecurityRows = new();
+    private readonly List<SpecRow> RolloutRows = new();
+    private readonly List<DescribeTableRow> ConditionRows = new();
+    private readonly List<DescribeTableRow> RelatedPodRows = new();
+    private readonly List<DescribeTableRow> ContainerRows = new();
+    private readonly List<DescribeTableRow> ProbeRows = new();
+    private readonly List<DescribeTableRow> ResourceRows = new();
+    private readonly List<DescribeTableRow> VolumeRows = new();
+    private readonly List<DescribeTableRow> ServicePortRows = new();
+    private readonly List<DescribeTableRow> EndpointRows = new();
+    private readonly List<DescribeTableRow> IngressRuleRows = new();
+    private readonly List<DescribeTableRow> NodeAddressRows = new();
+    private readonly List<DescribeTableRow> NodePodRows = new();
+    private readonly List<DescribeTableRow> ReplicaSetRows = new();
+    private IReadOnlyList<DescribeEvent> Events { get; set; } = Array.Empty<DescribeEvent>();
+    private readonly List<SectionNavItem> SectionNavItems = new();
+    private ElementReference SearchRef;
+    private ElementReference DescribeBodyRef;
+    private ElementReference DescribeNavRef;
+    private bool _showAllLabels;
+    private bool _showAllAnnotations;
+    private string StatusClass { get; set; } = "status-neutral";
+    private string StatusLabel { get; set; } = "unknown";
+    private DateTimeOffset? _pendingGotoAt;
+    private string? _currentKey;
+    private bool _isLoading;
+    private bool _scrollSpyAttached;
+    private const string EventsSectionId = "describe-events";
+    private const string RawSectionId = "describe-raw";
+    private const string SummarySectionId = "describe-summary";
+    private const string IdentitySectionId = "describe-identity";
+    private const string StatusSectionId = "describe-status";
+    private const string SpecSectionId = "describe-spec";
+    private const string RelationshipsSectionId = "describe-relationships";
+    private const string PodsSectionId = "describe-pods";
+    private const string ContainersSectionId = "describe-containers";
+    private const string ProbesSectionId = "describe-probes";
+    private const string ResourcesSectionId = "describe-resources";
+    private const string VolumesSectionId = "describe-volumes";
+    private const string NetworkingSectionId = "describe-networking";
+    private const string SecuritySectionId = "describe-security";
+    private const string QuickLinksSectionId = "describe-quick-links";
+    private const string RolloutSectionId = "describe-rollout";
+    private const string TemplateSectionId = "describe-template";
+    private const string PortsSectionId = "describe-ports";
+    private const string EndpointsSectionId = "describe-endpoints";
+    private const string RulesSectionId = "describe-rules";
+    private const string BackendHealthSectionId = "describe-backend-health";
+    private const string AddressesSectionId = "describe-addresses";
+    private const string NodePodsSectionId = "describe-node-pods";
+
+    private static readonly IReadOnlyList<DescribeTableColumn> ConditionColumns = new[]
+    {
+        new DescribeTableColumn("type", "Type"),
+        new DescribeTableColumn("status", "Status"),
+        new DescribeTableColumn("reason", "Reason"),
+        new DescribeTableColumn("message", "Message"),
+        new DescribeTableColumn("lastTransition", "Last transition")
+    };
+
+    private static readonly IReadOnlyList<DescribeTableColumn> RelatedPodColumns = new[]
+    {
+        new DescribeTableColumn("namespace", "Namespace"),
+        new DescribeTableColumn("name", "Pod"),
+        new DescribeTableColumn("status", "Status"),
+        new DescribeTableColumn("ready", "Ready"),
+        new DescribeTableColumn("restarts", "Restarts"),
+        new DescribeTableColumn("node", "Node"),
+        new DescribeTableColumn("age", "Age")
+    };
+
+    private static readonly IReadOnlyList<DescribeTableColumn> ContainerColumns = new[]
+    {
+        new DescribeTableColumn("name", "Name"),
+        new DescribeTableColumn("image", "Image"),
+        new DescribeTableColumn("ready", "Ready"),
+        new DescribeTableColumn("restarts", "Restarts"),
+        new DescribeTableColumn("state", "State"),
+        new DescribeTableColumn("lastState", "Last state"),
+        new DescribeTableColumn("ports", "Ports")
+    };
+
+    private static readonly IReadOnlyList<DescribeTableColumn> ProbeColumns = new[]
+    {
+        new DescribeTableColumn("container", "Container"),
+        new DescribeTableColumn("liveness", "Liveness"),
+        new DescribeTableColumn("readiness", "Readiness"),
+        new DescribeTableColumn("startup", "Startup")
+    };
+
+    private static readonly IReadOnlyList<DescribeTableColumn> ResourceColumns = new[]
+    {
+        new DescribeTableColumn("container", "Container"),
+        new DescribeTableColumn("requests", "Requests"),
+        new DescribeTableColumn("limits", "Limits")
+    };
+
+    private static readonly IReadOnlyList<DescribeTableColumn> VolumeColumns = new[]
+    {
+        new DescribeTableColumn("name", "Name"),
+        new DescribeTableColumn("type", "Type"),
+        new DescribeTableColumn("source", "Source")
+    };
+
+    private static readonly IReadOnlyList<DescribeTableColumn> ServicePortColumns = new[]
+    {
+        new DescribeTableColumn("name", "Name"),
+        new DescribeTableColumn("port", "Port"),
+        new DescribeTableColumn("targetPort", "Target"),
+        new DescribeTableColumn("protocol", "Protocol"),
+        new DescribeTableColumn("nodePort", "NodePort")
+    };
+
+    private static readonly IReadOnlyList<DescribeTableColumn> EndpointColumns = new[]
+    {
+        new DescribeTableColumn("address", "Address"),
+        new DescribeTableColumn("node", "Node"),
+        new DescribeTableColumn("target", "Target"),
+        new DescribeTableColumn("port", "Port"),
+        new DescribeTableColumn("source", "Source")
+    };
+
+    private static readonly IReadOnlyList<DescribeTableColumn> IngressRuleColumns = new[]
+    {
+        new DescribeTableColumn("host", "Host"),
+        new DescribeTableColumn("path", "Path"),
+        new DescribeTableColumn("pathType", "Path type"),
+        new DescribeTableColumn("service", "Service"),
+        new DescribeTableColumn("servicePort", "Service port")
+    };
+
+    private static readonly IReadOnlyList<DescribeTableColumn> NodeAddressColumns = new[]
+    {
+        new DescribeTableColumn("type", "Type"),
+        new DescribeTableColumn("address", "Address")
+    };
+
+    private static readonly IReadOnlyList<DescribeTableColumn> NodePodColumns = new[]
+    {
+        new DescribeTableColumn("namespace", "Namespace"),
+        new DescribeTableColumn("name", "Pod"),
+        new DescribeTableColumn("ready", "Ready"),
+        new DescribeTableColumn("restarts", "Restarts"),
+        new DescribeTableColumn("age", "Age")
+    };
+
+    private static readonly IReadOnlyList<DescribeTableColumn> ReplicaSetColumns = new[]
+    {
+        new DescribeTableColumn("name", "ReplicaSet"),
+        new DescribeTableColumn("desired", "Desired"),
+        new DescribeTableColumn("ready", "Ready"),
+        new DescribeTableColumn("age", "Age"),
+        new DescribeTableColumn("revision", "Revision")
+    };
+
+    private static readonly IReadOnlyList<DescribeTableColumn> EventColumns = new[]
+    {
+        new DescribeTableColumn("time", "Time"),
+        new DescribeTableColumn("type", "Type"),
+        new DescribeTableColumn("reason", "Reason"),
+        new DescribeTableColumn("from", "From"),
+        new DescribeTableColumn("message", "Message")
+    };
+
+    private bool IsPod => string.Equals(Resource?.Kind, "Pod", StringComparison.OrdinalIgnoreCase);
+    private bool IsWorkload => Resource?.Kind is "Deployment" or "StatefulSet" or "DaemonSet";
+    private string DisplayKind => Resource?.Kind ?? ResourceRef?.Kind ?? "Resource";
+    private string DisplayName => Resource?.Name ?? ResourceRef?.Name ?? "";
+    private string DisplayNamespace => string.IsNullOrWhiteSpace(Resource?.Namespace) ? "cluster" : Resource!.Namespace;
+    private string DisplayApiVersion => Resource?.ApiVersion ?? "unknown";
+    private string DisplayUid => Resource?.Uid ?? "unknown";
+    private string DisplayCreatedAt => Resource is null ? "unknown" : FormatTimestamp(Resource.CreatedAt);
+    private string DisplayCluster => Resource?.Cluster ?? "";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!IsOpen || string.IsNullOrWhiteSpace(Kind) || string.IsNullOrWhiteSpace(Name))
+        {
+            Resource = null;
+            ResourceRef = null;
+            LoadError = null;
+            _currentKey = null;
+            _isLoading = false;
+            _scrollSpyAttached = false;
+            ResourceJson?.Dispose();
+            ResourceJson = null;
+            return;
+        }
+
+        var ns = string.IsNullOrWhiteSpace(Namespace) ? "-" : Namespace!;
+        var key = $"{Kind}|{ns}|{Name}";
+        if (_currentKey == key && (Resource is not null || _isLoading))
+        {
+            return;
+        }
+
+        _currentKey = key;
+        _isLoading = true;
+        _scrollSpyAttached = false;
+        ResourceRef = new ResourceRef(Kind!, Namespace ?? "", Name!);
+        Resource = null;
+        LoadError = null;
+        try
+        {
+            var uri = Navigation.ToAbsoluteUri($"/cluster/describe/{Kind}/{ns}/{Name}");
+            Resource = await Http.GetFromJsonAsync<DescribeResource>(uri);
+            if (Resource is null)
+            {
+                LoadError = "Resource not found.";
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            LoadError = ex.Message;
+            return;
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+
+        ResourceJson?.Dispose();
+        ResourceJson = JsonDocument.Parse(Resource.RawJson);
+        SearchQuery = "";
+        RawSearchQuery = "";
+        EventTypeFilter = "";
+        EventReasonFilter = "";
+        BuildSections();
+        await LoadEventsAsync();
+        await LoadRelatedAsync();
+        await FocusSearchAsync();
+    }
+
+    private async Task LoadEventsAsync()
+    {
+        if (Resource is null)
+        {
+            return;
+        }
+
+        var ns = string.IsNullOrWhiteSpace(Resource.Namespace) ? "-" : Resource.Namespace;
+        var uri = Navigation.ToAbsoluteUri($"/cluster/events/{ns}/{Resource.Uid}");
+        var events = await Http.GetFromJsonAsync<List<DescribeEvent>>(uri);
+        Events = events ?? new List<DescribeEvent>();
+    }
+
+    private async Task LoadRelatedAsync()
+    {
+        if (Resource is null)
+        {
+            return;
+        }
+
+        var ns = string.IsNullOrWhiteSpace(Resource.Namespace) ? "-" : Resource.Namespace;
+        if (string.Equals(Resource.Kind, "Service", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var uri = Navigation.ToAbsoluteUri($"/cluster/services/{ns}/{Resource.Name}/endpoints");
+                var endpoints = await Http.GetFromJsonAsync<List<DescribeEndpointRow>>(uri);
+                EndpointRows.Clear();
+                if (endpoints is not null)
+                {
+                    foreach (var endpoint in endpoints)
+                    {
+                        EndpointRows.Add(new DescribeTableRow(new Dictionary<string, DescribeTableCell>
+                        {
+                            ["address"] = Cell(endpoint.Address),
+                            ["node"] = Cell(endpoint.Node),
+                            ["target"] = Cell(endpoint.Target),
+                            ["port"] = Cell(endpoint.Port),
+                            ["source"] = Cell(endpoint.Source)
+                        }));
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // Ignore endpoint errors.
+            }
+        }
+
+        if (string.Equals(Resource.Kind, "Deployment", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var uri = Navigation.ToAbsoluteUri($"/cluster/deployments/{ns}/{Resource.Name}/replicasets");
+                var replicaSets = await Http.GetFromJsonAsync<List<DescribeReplicaSetRow>>(uri);
+                ReplicaSetRows.Clear();
+                if (replicaSets is not null)
+                {
+                    foreach (var rs in replicaSets)
+                    {
+                        ReplicaSetRows.Add(new DescribeTableRow(new Dictionary<string, DescribeTableCell>
+                        {
+                            ["name"] = Cell(rs.Name, new ResourceRef("ReplicaSet", Resource.Namespace, rs.Name)),
+                            ["desired"] = Cell(rs.Desired),
+                            ["ready"] = Cell(rs.Ready),
+                            ["age"] = Cell(rs.Age),
+                            ["revision"] = Cell(rs.Revision)
+                        }));
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // Ignore replicaset errors.
+            }
+        }
+    }
+
+    private async Task FocusSearchAsync()
+    {
+        try
+        {
+            await Js.InvokeVoidAsync("tornadoFocus", SearchRef);
+        }
+        catch (Exception)
+        {
+            // Ignore focus errors.
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!IsOpen || Resource is null || _scrollSpyAttached)
+        {
+            return;
+        }
+
+        try
+        {
+            await Js.InvokeVoidAsync("tornadoDescribeScrollspy", DescribeBodyRef, DescribeNavRef);
+            _scrollSpyAttached = true;
+        }
+        catch (Exception)
+        {
+            // Ignore scrollspy errors.
+        }
+    }
+
+    private void BuildSections()
+    {
+        SummaryItems.Clear();
+        SpecRows.Clear();
+        NetworkingRows.Clear();
+        SecurityRows.Clear();
+        RolloutRows.Clear();
+        ConditionRows.Clear();
+        RelatedPodRows.Clear();
+        ContainerRows.Clear();
+        ProbeRows.Clear();
+        ResourceRows.Clear();
+        VolumeRows.Clear();
+        ServicePortRows.Clear();
+        EndpointRows.Clear();
+        IngressRuleRows.Clear();
+        NodeAddressRows.Clear();
+        NodePodRows.Clear();
+        ReplicaSetRows.Clear();
+        SectionNavItems.Clear();
+        _showAllLabels = false;
+        _showAllAnnotations = false;
+        StatusClass = "status-neutral";
+        StatusLabel = "unknown";
+
+        if (Resource is null || ResourceJson is null)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(Resource.Status))
+        {
+            StatusLabel = Resource.Status;
+            var normalized = Resource.Status.Trim().ToLowerInvariant();
+            if (normalized.Contains("ready") || normalized.Contains("running") || normalized.Contains("available") ||
+                normalized.Contains("succeeded") || normalized.Contains("true"))
+            {
+                StatusClass = "status-success";
+            }
+            else if (normalized.Contains("pending") || normalized.Contains("unknown") || normalized.Contains("creating"))
+            {
+                StatusClass = "status-warning";
+            }
+            else if (normalized.Contains("failed") || normalized.Contains("error") || normalized.Contains("false"))
+            {
+                StatusClass = "status-danger";
+            }
+            else
+            {
+                StatusClass = "status-neutral";
+            }
+        }
+
+        var root = ResourceJson.RootElement;
+        switch (Resource.Kind)
+        {
+            case "Pod":
+                BuildPodSummary(root);
+                BuildPodSpec(root);
+                BuildConditions(root);
+                BuildPodContainers(root);
+                BuildPodProbes(root);
+                BuildPodResources(root);
+                BuildPodVolumes(root);
+                BuildPodNetworking(root);
+                BuildPodSecurity(root);
+                break;
+            case "Service":
+                BuildServiceSummary(root);
+                BuildServiceSpec(root);
+                BuildConditions(root);
+                BuildServicePorts(root);
+                break;
+            case "Ingress":
+                BuildIngressSummary(root);
+                BuildIngressSpec(root);
+                BuildConditions(root);
+                BuildIngressRules(root);
+                break;
+            case "Deployment":
+            case "StatefulSet":
+            case "DaemonSet":
+                BuildWorkloadSummary(root);
+                BuildWorkloadSpec(root);
+                BuildConditions(root);
+                BuildRelatedPods(root);
+                BuildWorkloadTemplate(root);
+                BuildWorkloadRollout(root);
+                break;
+            case "Node":
+                BuildNodeSummary(root);
+                BuildNodeSpec(root);
+                BuildConditions(root);
+                BuildNodeAddresses(root);
+                BuildNodePods();
+                break;
+            default:
+                BuildConditions(root);
+                break;
+        }
+
+        BuildSectionNav();
+    }
+
+    private void BuildConditions(JsonElement root)
+    {
+        if (!TryGet(root, out var conditions, "status", "conditions") || conditions.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var condition in conditions.EnumerateArray())
+        {
+            var type = GetString(condition, "type");
+            var status = GetString(condition, "status");
+            var reason = GetString(condition, "reason");
+            var message = GetString(condition, "message");
+            var lastTransition = FormatTimestamp(GetDateTime(condition, "lastTransitionTime"));
+            ConditionRows.Add(new DescribeTableRow(new Dictionary<string, DescribeTableCell>
+            {
+                ["type"] = Cell(type),
+                ["status"] = Cell(status),
+                ["reason"] = Cell(reason),
+                ["message"] = Cell(message),
+                ["lastTransition"] = Cell(lastTransition)
+            }));
+        }
+    }
+
+    private void BuildPodSummary(JsonElement root)
+    {
+        SummaryItems.Add(new SummaryItem("Phase", GetString(root, "status", "phase")));
+        SummaryItems.Add(new SummaryItem("Reason", GetString(root, "status", "reason")));
+        SummaryItems.Add(new SummaryItem("Pod IP", GetString(root, "status", "podIP")));
+        SummaryItems.Add(new SummaryItem("Node", GetString(root, "spec", "nodeName")));
+        SummaryItems.Add(new SummaryItem("QoS", GetString(root, "status", "qosClass")));
+        SummaryItems.Add(new SummaryItem("Service Account", GetString(root, "spec", "serviceAccountName")));
+        SummaryItems.Add(new SummaryItem("Start", FormatTimestamp(GetDateTime(root, "status", "startTime"))));
+        SummaryItems.Add(new SummaryItem("Restarts", GetRestartCount(root).ToString()));
+    }
+
+    private void BuildPodSpec(JsonElement root)
+    {
+        SpecRows.Add(new SpecRow("Restart Policy", GetString(root, "spec", "restartPolicy")));
+        SpecRows.Add(new SpecRow("Priority Class", GetString(root, "spec", "priorityClassName")));
+        SpecRows.Add(new SpecRow("Scheduler", GetString(root, "spec", "schedulerName")));
+        SpecRows.Add(new SpecRow("Image Pull Secrets", FormatArray(root, "spec", "imagePullSecrets")));
+    }
+
+    private void BuildServiceSummary(JsonElement root)
+    {
+        SummaryItems.Add(new SummaryItem("Type", GetString(root, "spec", "type")));
+        SummaryItems.Add(new SummaryItem("Cluster IP", GetString(root, "spec", "clusterIP")));
+        SummaryItems.Add(new SummaryItem("External IPs", FormatArray(root, "spec", "externalIPs")));
+        SummaryItems.Add(new SummaryItem("LoadBalancer", FormatLoadBalancer(root)));
+        SummaryItems.Add(new SummaryItem("Ports", FormatPorts(root)));
+        SummaryItems.Add(new SummaryItem("Selector", FormatMap(GetMap(root, "spec", "selector"))));
+        SummaryItems.Add(new SummaryItem("Session Affinity", GetString(root, "spec", "sessionAffinity")));
+    }
+
+    private void BuildServiceSpec(JsonElement root)
+    {
+        SpecRows.Add(new SpecRow("External Traffic Policy", GetString(root, "spec", "externalTrafficPolicy")));
+        SpecRows.Add(new SpecRow("Internal Traffic Policy", GetString(root, "spec", "internalTrafficPolicy")));
+    }
+
+    private void BuildIngressSummary(JsonElement root)
+    {
+        SummaryItems.Add(new SummaryItem("Ingress Class", GetString(root, "spec", "ingressClassName")));
+        SummaryItems.Add(new SummaryItem("Address", FormatLoadBalancer(root)));
+        SummaryItems.Add(new SummaryItem("TLS", FormatTls(root)));
+        SummaryItems.Add(new SummaryItem("Default Backend", FormatDefaultBackend(root)));
+    }
+
+    private void BuildIngressSpec(JsonElement root)
+    {
+        SpecRows.Add(new SpecRow("Ingress Class", GetString(root, "spec", "ingressClassName")));
+        SpecRows.Add(new SpecRow("Default Backend", FormatDefaultBackend(root)));
+        SpecRows.Add(new SpecRow("TLS", FormatTls(root)));
+    }
+
+    private void BuildWorkloadSummary(JsonElement root)
+    {
+        if (Resource?.Kind == "DaemonSet")
+        {
+            SummaryItems.Add(new SummaryItem("Desired", GetString(root, "status", "desiredNumberScheduled")));
+            SummaryItems.Add(new SummaryItem("Current", GetString(root, "status", "currentNumberScheduled")));
+            SummaryItems.Add(new SummaryItem("Ready", GetString(root, "status", "numberReady")));
+            SummaryItems.Add(new SummaryItem("Available", GetString(root, "status", "numberAvailable")));
+            SummaryItems.Add(new SummaryItem("Misscheduled", GetString(root, "status", "numberMisscheduled")));
+            SummaryItems.Add(new SummaryItem("Update Strategy", GetString(root, "spec", "updateStrategy", "type")));
+            SummaryItems.Add(new SummaryItem("Selector", FormatMap(GetMap(root, "spec", "selector", "matchLabels"))));
+            SummaryItems.Add(new SummaryItem("Images", FormatImages(root)));
+            return;
+        }
+
+        if (Resource?.Kind == "StatefulSet")
+        {
+            SummaryItems.Add(new SummaryItem("Desired", GetString(root, "spec", "replicas")));
+            SummaryItems.Add(new SummaryItem("Ready", GetString(root, "status", "readyReplicas")));
+            SummaryItems.Add(new SummaryItem("Service", GetString(root, "spec", "serviceName")));
+            SummaryItems.Add(new SummaryItem("Update Strategy", GetString(root, "spec", "updateStrategy", "type")));
+            SummaryItems.Add(new SummaryItem("Selector", FormatMap(GetMap(root, "spec", "selector", "matchLabels"))));
+            SummaryItems.Add(new SummaryItem("Images", FormatImages(root)));
+            return;
+        }
+
+        SummaryItems.Add(new SummaryItem("Desired", GetString(root, "spec", "replicas")));
+        SummaryItems.Add(new SummaryItem("Updated", GetString(root, "status", "updatedReplicas")));
+        SummaryItems.Add(new SummaryItem("Available", GetString(root, "status", "availableReplicas")));
+        SummaryItems.Add(new SummaryItem("Unavailable", GetString(root, "status", "unavailableReplicas")));
+        SummaryItems.Add(new SummaryItem("Strategy", GetString(root, "spec", "strategy", "type")));
+        SummaryItems.Add(new SummaryItem("Selector", FormatMap(GetMap(root, "spec", "selector", "matchLabels"))));
+        SummaryItems.Add(new SummaryItem("Images", FormatImages(root)));
+    }
+
+    private void BuildWorkloadSpec(JsonElement root)
+    {
+        SpecRows.Add(new SpecRow("Image Pull Secrets", FormatArray(root, "spec", "template", "spec", "imagePullSecrets")));
+    }
+
+    private void BuildRelatedPods(JsonElement root)
+    {
+        var selector = GetMap(root, "spec", "selector", "matchLabels");
+        if (selector.Count == 0)
+        {
+            return;
+        }
+
+        var ns = Resource?.Namespace ?? "";
+        foreach (var pod in Pods.Where(pod =>
+                     (string.IsNullOrWhiteSpace(ns) || pod.Namespace == ns) &&
+                     selector.All(pair => pod.Labels.TryGetValue(pair.Key, out var value) && value == pair.Value)))
+        {
+            RelatedPodRows.Add(new DescribeTableRow(new Dictionary<string, DescribeTableCell>
+            {
+                ["namespace"] = Cell(pod.Namespace),
+                ["name"] = Cell(pod.Name, new ResourceRef("Pod", pod.Namespace, pod.Name)),
+                ["status"] = Cell(pod.Status),
+                ["ready"] = Cell(pod.Ready),
+                ["restarts"] = Cell(pod.Restarts.ToString()),
+                ["node"] = Cell(pod.Node),
+                ["age"] = Cell(pod.Age)
+            }));
+        }
+    }
+
+    private void BuildNodeSummary(JsonElement root)
+    {
+        SummaryItems.Add(new SummaryItem("OS", GetString(root, "status", "nodeInfo", "osImage")));
+        SummaryItems.Add(new SummaryItem("Kernel", GetString(root, "status", "nodeInfo", "kernelVersion")));
+        SummaryItems.Add(new SummaryItem("Runtime", GetString(root, "status", "nodeInfo", "containerRuntimeVersion")));
+        SummaryItems.Add(new SummaryItem("Kubelet", GetString(root, "status", "nodeInfo", "kubeletVersion")));
+        SummaryItems.Add(new SummaryItem("Capacity", $"CPU {GetString(root, "status", "capacity", "cpu")} · Mem {GetString(root, "status", "capacity", "memory")}"));
+        SummaryItems.Add(new SummaryItem("Allocatable", $"CPU {GetString(root, "status", "allocatable", "cpu")} · Mem {GetString(root, "status", "allocatable", "memory")}"));
+        SummaryItems.Add(new SummaryItem("Taints", FormatArray(root, "spec", "taints")));
+    }
+
+    private void BuildNodeSpec(JsonElement root)
+    {
+        SpecRows.Add(new SpecRow("Pod CIDR", GetString(root, "spec", "podCIDR")));
+    }
+
+    private void BuildPodContainers(JsonElement root)
+    {
+        if (!TryGet(root, out var containers, "spec", "containers") || containers.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        var statusMap = GetContainerStatusMap(root);
+        foreach (var container in containers.EnumerateArray())
+        {
+            var name = GetString(container, "name");
+            statusMap.TryGetValue(name, out var status);
+            ContainerRows.Add(new DescribeTableRow(new Dictionary<string, DescribeTableCell>
+            {
+                ["name"] = Cell(name),
+                ["image"] = Cell(GetString(container, "image")),
+                ["ready"] = Cell(GetBool(status, "ready")),
+                ["restarts"] = Cell(GetNumber(status, "restartCount")),
+                ["state"] = Cell(FormatContainerState(status, "state")),
+                ["lastState"] = Cell(FormatContainerState(status, "lastState")),
+                ["ports"] = Cell(FormatContainerPorts(container))
+            }));
+        }
+    }
+
+    private void BuildPodProbes(JsonElement root)
+    {
+        if (!TryGet(root, out var containers, "spec", "containers") || containers.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var container in containers.EnumerateArray())
+        {
+            ProbeRows.Add(new DescribeTableRow(new Dictionary<string, DescribeTableCell>
+            {
+                ["container"] = Cell(GetString(container, "name")),
+                ["liveness"] = Cell(FormatProbe(container, "livenessProbe")),
+                ["readiness"] = Cell(FormatProbe(container, "readinessProbe")),
+                ["startup"] = Cell(FormatProbe(container, "startupProbe"))
+            }));
+        }
+    }
+
+    private void BuildPodResources(JsonElement root)
+    {
+        if (!TryGet(root, out var containers, "spec", "containers") || containers.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var container in containers.EnumerateArray())
+        {
+            ResourceRows.Add(new DescribeTableRow(new Dictionary<string, DescribeTableCell>
+            {
+                ["container"] = Cell(GetString(container, "name")),
+                ["requests"] = Cell(FormatResourceMap(container, "resources", "requests")),
+                ["limits"] = Cell(FormatResourceMap(container, "resources", "limits"))
+            }));
+        }
+    }
+
+    private void BuildPodVolumes(JsonElement root)
+    {
+        if (!TryGet(root, out var volumes, "spec", "volumes") || volumes.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var volume in volumes.EnumerateArray())
+        {
+            VolumeRows.Add(new DescribeTableRow(new Dictionary<string, DescribeTableCell>
+            {
+                ["name"] = Cell(GetString(volume, "name")),
+                ["type"] = Cell(GetVolumeType(volume)),
+                ["source"] = Cell(GetVolumeSource(volume))
+            }));
+        }
+    }
+
+    private void BuildPodNetworking(JsonElement root)
+    {
+        NetworkingRows.Add(new SpecRow("Host Network", GetString(root, "spec", "hostNetwork")));
+        NetworkingRows.Add(new SpecRow("DNS Policy", GetString(root, "spec", "dnsPolicy")));
+        NetworkingRows.Add(new SpecRow("Node Selector", FormatMap(GetMap(root, "spec", "nodeSelector"))));
+        NetworkingRows.Add(new SpecRow("Tolerations", GetArrayCount(root, "spec", "tolerations")));
+    }
+
+    private void BuildPodSecurity(JsonElement root)
+    {
+        SecurityRows.Add(new SpecRow("Service Account", GetString(root, "spec", "serviceAccountName")));
+        SecurityRows.Add(new SpecRow("Run As User", GetString(root, "spec", "securityContext", "runAsUser")));
+        SecurityRows.Add(new SpecRow("Run As Group", GetString(root, "spec", "securityContext", "runAsGroup")));
+        SecurityRows.Add(new SpecRow("FS Group", GetString(root, "spec", "securityContext", "fsGroup")));
+        SecurityRows.Add(new SpecRow("Seccomp", GetString(root, "spec", "securityContext", "seccompProfile", "type")));
+    }
+
+    private void BuildServicePorts(JsonElement root)
+    {
+        if (!TryGet(root, out var ports, "spec", "ports") || ports.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var port in ports.EnumerateArray())
+        {
+            ServicePortRows.Add(new DescribeTableRow(new Dictionary<string, DescribeTableCell>
+            {
+                ["name"] = Cell(GetString(port, "name")),
+                ["port"] = Cell(GetString(port, "port")),
+                ["targetPort"] = Cell(GetString(port, "targetPort")),
+                ["protocol"] = Cell(GetString(port, "protocol")),
+                ["nodePort"] = Cell(GetString(port, "nodePort"))
+            }));
+        }
+    }
+
+    private void BuildIngressRules(JsonElement root)
+    {
+        if (!TryGet(root, out var rules, "spec", "rules") || rules.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var rule in rules.EnumerateArray())
+        {
+            var host = GetString(rule, "host");
+            if (!TryGet(rule, out var paths, "http", "paths") || paths.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var path in paths.EnumerateArray())
+            {
+                IngressRuleRows.Add(new DescribeTableRow(new Dictionary<string, DescribeTableCell>
+                {
+                    ["host"] = Cell(host),
+                    ["path"] = Cell(GetString(path, "path")),
+                    ["pathType"] = Cell(GetString(path, "pathType")),
+                    ["service"] = Cell(GetString(path, "backend", "service", "name")),
+                    ["servicePort"] = Cell(GetString(path, "backend", "service", "port", "number"))
+                }));
+            }
+        }
+    }
+
+    private void BuildWorkloadTemplate(JsonElement root)
+    {
+        if (!TryGet(root, out var containers, "spec", "template", "spec", "containers") || containers.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var container in containers.EnumerateArray())
+        {
+            ContainerRows.Add(new DescribeTableRow(new Dictionary<string, DescribeTableCell>
+            {
+                ["name"] = Cell(GetString(container, "name")),
+                ["image"] = Cell(GetString(container, "image")),
+                ["ready"] = Cell("not set"),
+                ["restarts"] = Cell("not set"),
+                ["state"] = Cell("not set"),
+                ["lastState"] = Cell("not set"),
+                ["ports"] = Cell(FormatContainerPorts(container))
+            }));
+
+            ProbeRows.Add(new DescribeTableRow(new Dictionary<string, DescribeTableCell>
+            {
+                ["container"] = Cell(GetString(container, "name")),
+                ["liveness"] = Cell(FormatProbe(container, "livenessProbe")),
+                ["readiness"] = Cell(FormatProbe(container, "readinessProbe")),
+                ["startup"] = Cell(FormatProbe(container, "startupProbe"))
+            }));
+
+            ResourceRows.Add(new DescribeTableRow(new Dictionary<string, DescribeTableCell>
+            {
+                ["container"] = Cell(GetString(container, "name")),
+                ["requests"] = Cell(FormatResourceMap(container, "resources", "requests")),
+                ["limits"] = Cell(FormatResourceMap(container, "resources", "limits"))
+            }));
+        }
+    }
+
+    private void BuildWorkloadRollout(JsonElement root)
+    {
+        if (Resource?.Kind == "Deployment")
+        {
+            var revision = GetString(root, "metadata", "annotations", "deployment.kubernetes.io/revision");
+            RolloutRows.Add(new SpecRow("Revision", revision));
+            RolloutRows.Add(new SpecRow("Strategy", GetString(root, "spec", "strategy", "type")));
+            RolloutRows.Add(new SpecRow("Max Surge", GetString(root, "spec", "strategy", "rollingUpdate", "maxSurge")));
+            RolloutRows.Add(new SpecRow("Max Unavailable", GetString(root, "spec", "strategy", "rollingUpdate", "maxUnavailable")));
+        }
+        else if (Resource?.Kind == "StatefulSet")
+        {
+            RolloutRows.Add(new SpecRow("Update Strategy", GetString(root, "spec", "updateStrategy", "type")));
+            RolloutRows.Add(new SpecRow("Partition", GetString(root, "spec", "updateStrategy", "rollingUpdate", "partition")));
+        }
+        else if (Resource?.Kind == "DaemonSet")
+        {
+            RolloutRows.Add(new SpecRow("Update Strategy", GetString(root, "spec", "updateStrategy", "type")));
+            RolloutRows.Add(new SpecRow("Max Unavailable", GetString(root, "spec", "updateStrategy", "rollingUpdate", "maxUnavailable")));
+        }
+    }
+
+    private void BuildNodeAddresses(JsonElement root)
+    {
+        if (!TryGet(root, out var addresses, "status", "addresses") || addresses.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var address in addresses.EnumerateArray())
+        {
+            NodeAddressRows.Add(new DescribeTableRow(new Dictionary<string, DescribeTableCell>
+            {
+                ["type"] = Cell(GetString(address, "type")),
+                ["address"] = Cell(GetString(address, "address"))
+            }));
+        }
+    }
+
+    private void BuildNodePods()
+    {
+        if (Resource?.Kind != "Node")
+        {
+            return;
+        }
+
+        var nodeName = Resource.Name;
+        foreach (var pod in Pods.Where(pod => pod.Node == nodeName))
+        {
+            NodePodRows.Add(new DescribeTableRow(new Dictionary<string, DescribeTableCell>
+            {
+                ["namespace"] = Cell(pod.Namespace),
+                ["name"] = Cell(pod.Name, new ResourceRef("Pod", pod.Namespace, pod.Name)),
+                ["ready"] = Cell(pod.Ready),
+                ["restarts"] = Cell(pod.Restarts.ToString()),
+                ["age"] = Cell(pod.Age)
+            }));
+        }
+    }
+
+    private string GetPodNodeName()
+    {
+        if (ResourceJson is null)
+        {
+            return "";
+        }
+
+        var node = GetString(ResourceJson.RootElement, "spec", "nodeName");
+        return node == "not set" ? "" : node;
+    }
+
+    private async Task OpenPodNode()
+    {
+        if (!OnOpenResource.HasDelegate)
+        {
+            return;
+        }
+
+        var node = GetPodNodeName();
+        if (string.IsNullOrWhiteSpace(node))
+        {
+            return;
+        }
+
+        await OnOpenResource.InvokeAsync(new ResourceRef("Node", "", node));
+    }
+
+    private void BuildSectionNav()
+    {
+        RegisterSection(SummarySectionId, "Summary");
+        RegisterSection(IdentitySectionId, "Identity");
+        RegisterSection(StatusSectionId, "Status");
+        RegisterSection(SpecSectionId, "Spec");
+        RegisterSection(RelationshipsSectionId, "Relationships");
+
+        if (IsWorkload)
+        {
+            RegisterSection(PodsSectionId, "Pods");
+        }
+
+        if (Resource?.Kind == "Pod" || IsWorkload)
+        {
+            RegisterSection(ContainersSectionId, IsWorkload ? "Template" : "Containers");
+            RegisterSection(ProbesSectionId, "Probes");
+            RegisterSection(ResourcesSectionId, "Resources");
+        }
+
+        if (Resource?.Kind == "Pod")
+        {
+            RegisterSection(VolumesSectionId, "Volumes");
+            RegisterSection(NetworkingSectionId, "Networking");
+            RegisterSection(SecuritySectionId, "Security");
+            RegisterSection(QuickLinksSectionId, "Quick links");
+        }
+
+        if (RolloutRows.Count > 0 || IsWorkload)
+        {
+            RegisterSection(RolloutSectionId, "Rollout");
+        }
+
+        if (Resource?.Kind == "Service")
+        {
+            RegisterSection(PortsSectionId, "Ports");
+            RegisterSection(EndpointsSectionId, "Endpoints");
+        }
+
+        if (Resource?.Kind == "Ingress")
+        {
+            RegisterSection(RulesSectionId, "Rules");
+            RegisterSection(BackendHealthSectionId, "Backend health");
+        }
+
+        if (Resource?.Kind == "Node")
+        {
+            RegisterSection(AddressesSectionId, "Addresses");
+            RegisterSection(NodePodsSectionId, "Pods on node");
+        }
+
+        RegisterSection(EventsSectionId, "Events");
+        RegisterSection(RawSectionId, "Raw");
+    }
+
+    private void RegisterSection(string id, string label)
+    {
+        SectionNavItems.Add(new SectionNavItem(id, label));
+    }
+
+    private Task ScrollToSection(string id)
+        => Js.InvokeVoidAsync("tornadoScrollToId", id).AsTask();
+
+    private async Task Close()
+    {
+        await OnClose.InvokeAsync();
+    }
+
+    private async Task OpenOwner(DescribeOwnerRef owner)
+    {
+        if (OnOpenResource.HasDelegate)
+        {
+            await OnOpenResource.InvokeAsync(new ResourceRef(owner.Kind, Resource?.Namespace ?? "", owner.Name));
+        }
+    }
+
+    private async Task OpenLogs()
+    {
+        if (OnOpenLogs.HasDelegate && ResourceRef is not null)
+        {
+            await OnOpenLogs.InvokeAsync(ResourceRef);
+        }
+    }
+
+    private async Task Restart()
+    {
+        if (Resource is null)
+        {
+            return;
+        }
+
+        var confirmed = await Js.InvokeAsync<bool>(
+            "confirm",
+            $"Restart {Resource.Kind} {Resource.Name} in {Resource.Namespace}?");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        var uri = Navigation.ToAbsoluteUri($"/cluster/workloads/{Resource.Kind}/{Resource.Namespace}/{Resource.Name}/restart");
+        await Http.PostAsync(uri, null);
+    }
+
+    private async Task CopyName()
+        => await CopyText(Resource?.Name ?? "");
+
+    private async Task CopyYaml()
+        => await CopyText(Resource?.RawYaml ?? "");
+
+    private async Task CopyJson()
+        => await CopyText(Resource?.RawJson ?? "");
+
+    private async Task CopyKubectl()
+    {
+        if (Resource is null)
+        {
+            return;
+        }
+
+        var nsFlag = string.IsNullOrWhiteSpace(Resource.Namespace)
+            ? ""
+            : $" -n {Resource.Namespace}";
+        var command = $"kubectl describe {Resource.Kind.ToLowerInvariant()} {Resource.Name}{nsFlag}";
+        await CopyText(command);
+    }
+
+    private async Task CopyText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        try
+        {
+            await Js.InvokeVoidAsync("tornadoCopyText", text);
+        }
+        catch (Exception)
+        {
+            // Ignore clipboard errors.
+        }
+    }
+
+    private Task ScrollToEvents()
+        => Js.InvokeVoidAsync("tornadoScrollToId", EventsSectionId).AsTask();
+
+    private Task ScrollToRaw()
+    {
+        RawTab = RawTabYaml;
+        return Js.InvokeVoidAsync("tornadoScrollToId", RawSectionId).AsTask();
+    }
+
+    private void SetRawTab(string tab)
+    {
+        RawTab = tab;
+    }
+
+    private void HandleKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape")
+        {
+            _ = Close();
+        }
+
+        if (args.Key == "/")
+        {
+            _ = FocusSearchAsync();
+        }
+
+        if (args.Key == "g")
+        {
+            _pendingGotoAt = DateTimeOffset.UtcNow;
+            return;
+        }
+
+        if (_pendingGotoAt is not null &&
+            DateTimeOffset.UtcNow - _pendingGotoAt <= TimeSpan.FromSeconds(1))
+        {
+            if (args.Key == "e")
+            {
+                _ = ScrollToEvents();
+                _pendingGotoAt = null;
+            }
+            else if (args.Key == "r")
+            {
+                _ = ScrollToRaw();
+                _pendingGotoAt = null;
+            }
+        }
+    }
+
+    private IEnumerable<SpecRow> FilterRows(IEnumerable<SpecRow> rows)
+        => string.IsNullOrWhiteSpace(SearchQuery)
+            ? rows
+            : rows.Where(row => row.Matches(SearchQuery));
+
+    private IReadOnlyList<DescribeTableRow> FilterTableRows(IReadOnlyList<DescribeTableRow> rows)
+        => string.IsNullOrWhiteSpace(SearchQuery)
+            ? rows
+            : rows.Where(row => row.Cells.Values.Any(cell =>
+                (cell.CopyValue ?? cell.Text).Contains(SearchQuery, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+    private IReadOnlyList<DescribeTableRow> FilteredEventRows
+        => Events.Where(ev =>
+                (string.IsNullOrWhiteSpace(EventTypeFilter) || ev.Type.Contains(EventTypeFilter, StringComparison.OrdinalIgnoreCase)) &&
+                (string.IsNullOrWhiteSpace(EventReasonFilter) || ev.Reason.Contains(EventReasonFilter, StringComparison.OrdinalIgnoreCase)) &&
+                (string.IsNullOrWhiteSpace(SearchQuery) || ev.Message.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase)))
+            .Select(ev => new DescribeTableRow(new Dictionary<string, DescribeTableCell>
+            {
+                ["time"] = Cell(FormatTimestamp(ev.Time)),
+                ["type"] = Cell(ev.Type),
+                ["reason"] = Cell(ev.Reason),
+                ["from"] = Cell(ev.From),
+                ["message"] = Cell(ev.Message)
+            }))
+            .ToList();
+
+    private static string GetKindIcon(string kind)
+        => kind switch
+        {
+            "Pod" => "P",
+            "Service" => "S",
+            "Ingress" => "I",
+            "Node" => "N",
+            "Deployment" => "D",
+            "StatefulSet" => "SS",
+            "DaemonSet" => "DS",
+            _ => "R"
+        };
+
+    private static string FormatTimestamp(DateTimeOffset? timestamp)
+    {
+        if (timestamp is null)
+        {
+            return "unknown";
+        }
+
+        var relative = FormatRelativeTime(timestamp.Value);
+        return $"{timestamp:yyyy-MM-dd HH:mm:ss} ({relative})";
+    }
+
+    private static string FormatRelativeTime(DateTimeOffset timestamp)
+    {
+        var elapsed = DateTimeOffset.Now - timestamp;
+        if (elapsed.TotalSeconds < 60)
+        {
+            var seconds = Math.Max(1, (int)elapsed.TotalSeconds);
+            return $"{seconds}s ago";
+        }
+
+        if (elapsed.TotalMinutes < 60)
+        {
+            var minutes = (int)elapsed.TotalMinutes;
+            return $"{minutes}m ago";
+        }
+
+        var hours = (int)elapsed.TotalHours;
+        return $"{hours}h ago";
+    }
+
+    private string HighlightRaw(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(RawSearchQuery))
+        {
+            return raw;
+        }
+
+        var encoded = System.Net.WebUtility.HtmlEncode(raw);
+        var pattern = System.Text.RegularExpressions.Regex.Escape(RawSearchQuery);
+        return System.Text.RegularExpressions.Regex.Replace(
+            encoded,
+            pattern,
+            match => $"<mark>{match.Value}</mark>",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+
+    private string Highlight(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "not set";
+        }
+
+        if (string.IsNullOrWhiteSpace(SearchQuery))
+        {
+            return System.Net.WebUtility.HtmlEncode(value);
+        }
+
+        var encoded = System.Net.WebUtility.HtmlEncode(value);
+        var pattern = System.Text.RegularExpressions.Regex.Escape(SearchQuery);
+        return System.Text.RegularExpressions.Regex.Replace(
+            encoded,
+            pattern,
+            match => $"<mark>{match.Value}</mark>",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+
+    private DescribeTableCell Cell(string? value, ResourceRef? link = null)
+    {
+        var normalized = string.IsNullOrWhiteSpace(value) ? "not set" : value;
+        return new DescribeTableCell(normalized, normalized, normalized, link);
+    }
+
+    private static int GetRestartCount(JsonElement root)
+    {
+        if (!TryGet(root, out var statuses, "status", "containerStatuses") || statuses.ValueKind != JsonValueKind.Array)
+        {
+            return 0;
+        }
+
+        var total = 0;
+        foreach (var item in statuses.EnumerateArray())
+        {
+            if (item.TryGetProperty("restartCount", out var count) && count.TryGetInt32(out var value))
+            {
+                total += value;
+            }
+        }
+
+        return total;
+    }
+
+    private static Dictionary<string, JsonElement> GetContainerStatusMap(JsonElement root)
+    {
+        var result = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        if (!TryGet(root, out var statuses, "status", "containerStatuses") || statuses.ValueKind != JsonValueKind.Array)
+        {
+            return result;
+        }
+
+        foreach (var status in statuses.EnumerateArray())
+        {
+            var name = GetString(status, "name");
+            if (name != "not set")
+            {
+                result[name] = status;
+            }
+        }
+
+        return result;
+    }
+
+    private static string GetBool(JsonElement element, string property)
+    {
+        if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out var value))
+        {
+            return "not set";
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.True => "true",
+            JsonValueKind.False => "false",
+            _ => value.ToString()
+        };
+    }
+
+    private static string GetNumber(JsonElement element, string property)
+    {
+        if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out var value))
+        {
+            return "not set";
+        }
+
+        return value.ValueKind == JsonValueKind.Number ? value.ToString() : value.ToString();
+    }
+
+    private static string FormatContainerState(JsonElement status, string field)
+    {
+        if (status.ValueKind != JsonValueKind.Object || !status.TryGetProperty(field, out var state))
+        {
+            return "not set";
+        }
+
+        if (state.ValueKind != JsonValueKind.Object)
+        {
+            return state.ToString();
+        }
+
+        foreach (var prop in state.EnumerateObject())
+        {
+            if (prop.Value.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var reason = GetString(prop.Value, "reason");
+            return reason == "not set" ? prop.Name : $"{prop.Name} ({reason})";
+        }
+
+        return "not set";
+    }
+
+    private static string FormatContainerPorts(JsonElement container)
+    {
+        if (!TryGet(container, out var ports, "ports") || ports.ValueKind != JsonValueKind.Array)
+        {
+            return "not set";
+        }
+
+        var values = new List<string>();
+        foreach (var port in ports.EnumerateArray())
+        {
+            var containerPort = GetString(port, "containerPort");
+            var protocol = GetString(port, "protocol");
+            values.Add($"{containerPort}/{protocol}");
+        }
+
+        return values.Count == 0 ? "not set" : string.Join(", ", values);
+    }
+
+    private static string FormatProbe(JsonElement container, string probeField)
+    {
+        if (!TryGet(container, out var probe, probeField) || probe.ValueKind != JsonValueKind.Object)
+        {
+            return "not set";
+        }
+
+        if (probe.TryGetProperty("httpGet", out var httpGet) && httpGet.ValueKind == JsonValueKind.Object)
+        {
+            var port = GetString(httpGet, "port");
+            var path = GetString(httpGet, "path");
+            return $"HTTP GET {port}{(path == "not set" ? "" : $" {path}")}";
+        }
+
+        if (probe.TryGetProperty("tcpSocket", out var tcpSocket) && tcpSocket.ValueKind == JsonValueKind.Object)
+        {
+            var port = GetString(tcpSocket, "port");
+            return $"TCP {port}";
+        }
+
+        if (probe.TryGetProperty("exec", out var exec) && exec.ValueKind == JsonValueKind.Object)
+        {
+            var command = FormatArray(exec, "command");
+            return command == "not set" ? "Exec" : $"Exec {command}";
+        }
+
+        return "configured";
+    }
+
+    private static string FormatResourceMap(JsonElement container, params string[] path)
+    {
+        if (!TryGet(container, out var values, path) || values.ValueKind != JsonValueKind.Object)
+        {
+            return "not set";
+        }
+
+        var pairs = new List<string>();
+        foreach (var prop in values.EnumerateObject())
+        {
+            pairs.Add($"{prop.Name}={prop.Value}");
+        }
+
+        return pairs.Count == 0 ? "not set" : string.Join(", ", pairs);
+    }
+
+    private static string GetVolumeType(JsonElement volume)
+    {
+        if (volume.ValueKind != JsonValueKind.Object)
+        {
+            return "not set";
+        }
+
+        foreach (var prop in volume.EnumerateObject())
+        {
+            if (prop.NameEquals("name"))
+            {
+                continue;
+            }
+
+            return prop.Name;
+        }
+
+        return "not set";
+    }
+
+    private static string GetVolumeSource(JsonElement volume)
+    {
+        if (volume.ValueKind != JsonValueKind.Object)
+        {
+            return "not set";
+        }
+
+        foreach (var prop in volume.EnumerateObject())
+        {
+            if (prop.NameEquals("name"))
+            {
+                continue;
+            }
+
+            return prop.Name switch
+            {
+                "configMap" => GetString(prop.Value, "name"),
+                "secret" => GetString(prop.Value, "secretName"),
+                "persistentVolumeClaim" => GetString(prop.Value, "claimName"),
+                "emptyDir" => "emptyDir",
+                "hostPath" => GetString(prop.Value, "path"),
+                _ => prop.Value.ToString()
+            };
+        }
+
+        return "not set";
+    }
+
+    private static string GetString(JsonElement root, params string[] path)
+    {
+        if (!TryGet(root, out var value, path))
+        {
+            return "not set";
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString() ?? "not set",
+            JsonValueKind.Number => value.ToString(),
+            JsonValueKind.True => "true",
+            JsonValueKind.False => "false",
+            JsonValueKind.Null => "not set",
+            _ => value.ToString()
+        };
+    }
+
+    private static DateTimeOffset? GetDateTime(JsonElement root, params string[] path)
+    {
+        if (!TryGet(root, out var value, path))
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.String && DateTimeOffset.TryParse(value.GetString(), out var parsed))
+        {
+            return parsed;
+        }
+
+        return null;
+    }
+
+    private static string GetArrayCount(JsonElement root, params string[] path)
+    {
+        if (!TryGet(root, out var value, path))
+        {
+            return "0";
+        }
+
+        return value.ValueKind == JsonValueKind.Array ? value.GetArrayLength().ToString() : "0";
+    }
+
+    private static Dictionary<string, string> GetMap(JsonElement root, params string[] path)
+    {
+        if (!TryGet(root, out var value, path) || value.ValueKind != JsonValueKind.Object)
+        {
+            return new Dictionary<string, string>();
+        }
+
+        var result = new Dictionary<string, string>();
+        foreach (var prop in value.EnumerateObject())
+        {
+            result[prop.Name] = prop.Value.GetString() ?? "";
+        }
+
+        return result;
+    }
+
+    private static string FormatMap(Dictionary<string, string> map)
+        => map.Count == 0
+            ? "not set"
+            : string.Join(", ", map.Select(pair => $"{pair.Key}={pair.Value}"));
+
+    private static string FormatArray(JsonElement root, params string[] path)
+    {
+        if (!TryGet(root, out var value, path) || value.ValueKind != JsonValueKind.Array)
+        {
+            return "not set";
+        }
+
+        return string.Join(", ", value.EnumerateArray().Select(entry =>
+        {
+            if (entry.ValueKind == JsonValueKind.Object && entry.TryGetProperty("name", out var name))
+            {
+                return name.GetString() ?? "";
+            }
+
+            return entry.ToString();
+        }).Where(item => !string.IsNullOrWhiteSpace(item)));
+    }
+
+    private static string FormatPorts(JsonElement root)
+    {
+        if (!TryGet(root, out var ports, "spec", "ports") || ports.ValueKind != JsonValueKind.Array)
+        {
+            return "not set";
+        }
+
+        return string.Join(", ", ports.EnumerateArray().Select(port =>
+        {
+            var name = GetString(port, "name");
+            var portValue = GetString(port, "port");
+            var target = GetString(port, "targetPort");
+            var protocol = GetString(port, "protocol");
+            return $"{name} {portValue}->{target}/{protocol}".Trim();
+        }));
+    }
+
+    private static string FormatImages(JsonElement root)
+    {
+        if (!TryGet(root, out var containers, "spec", "template", "spec", "containers") || containers.ValueKind != JsonValueKind.Array)
+        {
+            return "not set";
+        }
+
+        var images = containers.EnumerateArray()
+            .Select(container => GetString(container, "image"))
+            .Where(image => !string.IsNullOrWhiteSpace(image) && image != "not set")
+            .Distinct();
+        return string.Join(", ", images);
+    }
+
+    private static string FormatTls(JsonElement root)
+    {
+        if (!TryGet(root, out var tls, "spec", "tls") || tls.ValueKind != JsonValueKind.Array)
+        {
+            return "not set";
+        }
+
+        return string.Join(", ", tls.EnumerateArray().Select(entry =>
+        {
+            var secret = GetString(entry, "secretName");
+            var hosts = FormatArray(entry, "hosts");
+            return $"{secret} ({hosts})";
+        }));
+    }
+
+    private static string FormatDefaultBackend(JsonElement root)
+    {
+        if (!TryGet(root, out var backend, "spec", "defaultBackend"))
+        {
+            return "not set";
+        }
+
+        if (backend.TryGetProperty("service", out var svc))
+        {
+            var name = GetString(svc, "name");
+            var port = GetString(svc, "port", "number");
+            return $"{name}:{port}";
+        }
+
+        return "not set";
+    }
+
+    private static string FormatRules(JsonElement root)
+    {
+        if (!TryGet(root, out var rules, "spec", "rules") || rules.ValueKind != JsonValueKind.Array)
+        {
+            return "not set";
+        }
+
+        return string.Join("; ", rules.EnumerateArray().Select(rule =>
+        {
+            var host = GetString(rule, "host");
+            if (!TryGet(rule, out var paths, "http", "paths") || paths.ValueKind != JsonValueKind.Array)
+            {
+                return host;
+            }
+
+            var parts = paths.EnumerateArray().Select(path =>
+            {
+                var pathValue = GetString(path, "path");
+                var serviceName = GetString(path, "backend", "service", "name");
+                var servicePort = GetString(path, "backend", "service", "port", "number");
+                return $"{pathValue}->{serviceName}:{servicePort}";
+            });
+
+            return $"{host}: {string.Join(", ", parts)}";
+        }));
+    }
+
+    private static string FormatLoadBalancer(JsonElement root)
+    {
+        if (!TryGet(root, out var ingress, "status", "loadBalancer", "ingress") || ingress.ValueKind != JsonValueKind.Array)
+        {
+            return "not set";
+        }
+
+        return string.Join(", ", ingress.EnumerateArray().Select(entry =>
+            GetString(entry, "ip") != "not set" ? GetString(entry, "ip") : GetString(entry, "hostname")));
+    }
+
+    private static bool TryGet(JsonElement root, out JsonElement value, params string[] path)
+    {
+        value = root;
+        foreach (var segment in path)
+        {
+            if (value.ValueKind != JsonValueKind.Object || !value.TryGetProperty(segment, out value))
+            {
+                value = default;
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private RenderFragment RenderChips(IReadOnlyDictionary<string, string> items, bool showAll, Action toggle) => builder =>
+    {
+        if (items.Count == 0)
+        {
+            builder.AddContent(0, "not set");
+            return;
+        }
+
+        var displayItems = showAll ? items : items.Take(8);
+        var index = 0;
+        foreach (var item in displayItems)
+        {
+            builder.OpenElement(index++, "span");
+            builder.AddAttribute(index++, "class", "chip");
+            builder.AddContent(index++, $"{item.Key}={item.Value}");
+            builder.CloseElement();
+        }
+
+        if (items.Count > 8)
+        {
+            builder.OpenElement(index++, "button");
+            builder.AddAttribute(index++, "class", "link-button");
+            builder.AddAttribute(index++, "onclick", EventCallback.Factory.Create(this, toggle));
+            builder.AddContent(index++, showAll ? "Show less" : $"Show {items.Count - 8} more");
+            builder.CloseElement();
+        }
+    };
+
+    private void ToggleLabels()
+    {
+        _showAllLabels = !_showAllLabels;
+    }
+
+    private void ToggleAnnotations()
+    {
+        _showAllAnnotations = !_showAllAnnotations;
+    }
+
+    private sealed record SummaryItem(string Label, string Value);
+    private sealed record SpecRow(string Label, string Value)
+    {
+        public bool Matches(string query)
+            => Label.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+               Value.Contains(query, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed record SectionNavItem(string Id, string Label);
+}

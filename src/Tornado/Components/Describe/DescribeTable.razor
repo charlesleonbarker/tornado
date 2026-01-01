@@ -1,0 +1,184 @@
+@namespace Tornado.Components.Describe
+@using Microsoft.AspNetCore.Components
+@using Tornado.Models
+@inject IJSRuntime Js
+
+<div class="describe-table-wrap">
+    <div class="describe-table-tools">
+        <details class="describe-table-columns">
+            <summary>Columns</summary>
+            <div class="describe-table-menu">
+                @foreach (var column in Columns)
+                {
+                    <label class="describe-table-toggle">
+                        <input type="checkbox"
+                               checked="@(!HiddenColumns.Contains(column.Key))"
+                               @onchange="() => ToggleColumn(column.Key)" />
+                        <span>@column.Label</span>
+                    </label>
+                }
+            </div>
+        </details>
+    </div>
+    @if (Rows.Count == 0)
+    {
+        <div class="empty-row">@EmptyText</div>
+    }
+    else
+    {
+        <table class="describe-table">
+            <thead>
+                <tr>
+                    @foreach (var column in Columns)
+                    {
+                        if (HiddenColumns.Contains(column.Key))
+                        {
+                            continue;
+                        }
+                        <th class="@GetHeaderClass(column)"
+                            style="@GetHeaderStyle(column)"
+                            @onclick="() => ToggleSort(column)">
+                            <span>@column.Label</span>
+                            @if (column.Sortable)
+                            {
+                                <span class="sort-indicator">@GetSortIndicator(column)</span>
+                            }
+                        </th>
+                    }
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in SortedRows)
+                {
+                    <tr>
+                        @foreach (var column in Columns)
+                        {
+                            if (HiddenColumns.Contains(column.Key))
+                            {
+                                continue;
+                            }
+                            var cell = row.Cells.TryGetValue(column.Key, out var value)
+                                ? value
+                                : new DescribeTableCell("—");
+                            <td class="@GetCellClass(column)">
+                                <div class="cell-content">
+                                    @if (cell.Link is not null && OnOpenResource.HasDelegate)
+                                    {
+                                        <button class="link-button" @onclick="() => OnOpenResource.InvokeAsync(cell.Link)">
+                                            @RenderCellText(cell)
+                                        </button>
+                                    }
+                                    else
+                                    {
+                                        @RenderCellText(cell)
+                                    }
+                                    @if (AllowCopy)
+                                    {
+                                        <button class="ghost cell-copy"
+                                                title="Copy"
+                                                @onclick="() => CopyCell(cell)">
+                                            Copy
+                                        </button>
+                                    }
+                                </div>
+                            </td>
+                        }
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    [Parameter] public IReadOnlyList<DescribeTableColumn> Columns { get; set; } = Array.Empty<DescribeTableColumn>();
+    [Parameter] public IReadOnlyList<DescribeTableRow> Rows { get; set; } = Array.Empty<DescribeTableRow>();
+    [Parameter] public string EmptyText { get; set; } = "No data.";
+    [Parameter] public bool AllowCopy { get; set; } = true;
+    [Parameter] public Func<string, string>? Highlighter { get; set; }
+    [Parameter] public EventCallback<ResourceRef> OnOpenResource { get; set; }
+
+    private readonly HashSet<string> HiddenColumns = new(StringComparer.Ordinal);
+    private string? SortKey { get; set; }
+    private bool SortAsc { get; set; } = true;
+
+    private IEnumerable<DescribeTableRow> SortedRows
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(SortKey))
+            {
+                return Rows;
+            }
+
+            return SortAsc
+                ? Rows.OrderBy(row => GetSortValue(row, SortKey!), StringComparer.OrdinalIgnoreCase)
+                : Rows.OrderByDescending(row => GetSortValue(row, SortKey!), StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    private string GetSortValue(DescribeTableRow row, string key)
+        => row.Cells.TryGetValue(key, out var cell)
+            ? cell.SortValue ?? cell.Text
+            : "";
+
+    private void ToggleSort(DescribeTableColumn column)
+    {
+        if (!column.Sortable)
+        {
+            return;
+        }
+
+        if (SortKey == column.Key)
+        {
+            SortAsc = !SortAsc;
+            return;
+        }
+
+        SortKey = column.Key;
+        SortAsc = true;
+    }
+
+    private string GetSortIndicator(DescribeTableColumn column)
+    {
+        if (SortKey != column.Key)
+        {
+            return "";
+        }
+        return SortAsc ? "^" : "v";
+    }
+
+    private string GetHeaderClass(DescribeTableColumn column)
+        => column.Sortable ? "is-sortable" : "";
+
+    private string GetHeaderStyle(DescribeTableColumn column)
+        => string.IsNullOrWhiteSpace(column.Width) ? "" : $"width: {column.Width};";
+
+    private string GetCellClass(DescribeTableColumn column)
+        => string.IsNullOrWhiteSpace(column.Align) ? "" : $"align-{column.Align}";
+
+    private void ToggleColumn(string key)
+    {
+        if (!HiddenColumns.Add(key))
+        {
+            HiddenColumns.Remove(key);
+        }
+    }
+
+    private Task CopyCell(DescribeTableCell cell)
+    {
+        var value = cell.CopyValue ?? cell.Text;
+        return Js.InvokeVoidAsync("tornadoCopyText", value).AsTask();
+    }
+
+    private object RenderCellText(DescribeTableCell cell)
+    {
+        var raw = cell.CopyValue ?? cell.Text;
+        if (Highlighter is not null)
+        {
+            return new MarkupString(Highlighter.Invoke(raw));
+        }
+
+        return cell.IsHtml ? new MarkupString(cell.Text) : cell.Text;
+    }
+}

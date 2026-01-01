@@ -1,9 +1,12 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
+COPY src/Tornado/Tornado.csproj src/Tornado/
+RUN dotnet restore src/Tornado/Tornado.csproj -v:normal
 COPY . .
-RUN dotnet publish src/Tornado/Tornado.csproj -c Release -o /app/publish
+RUN dotnet publish src/Tornado/Tornado.csproj -c Release -o /app/publish --no-restore -v:normal
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
+LABEL org.opencontainers.image.description DESCRIPTION
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && curl -fsSL -o /usr/local/bin/kubectl https://dl.k8s.io/release/v1.29.3/bin/linux/amd64/kubectl \

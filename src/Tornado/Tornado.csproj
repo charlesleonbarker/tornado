@@ -9,11 +9,8 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.0" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
-    <PackageReference Include="KubernetesClient" Version="13.0.13" />
+    <PackageReference Include="KubernetesClient" Version="13.0.37" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="8.0.0" />
   </ItemGroup>
-
-  <Target Name="DevDeploy" AfterTargets="Build" Condition="'$(DevDeploy)' == 'true'">
-    <Exec Command="bash &quot;$(MSBuildProjectDirectory)/../../scripts/dev-deploy.sh&quot;" />
-  </Target>
 
 </Project>

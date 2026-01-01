@@ -1,20 +1,16 @@
 @page "/"
+@implements IAsyncDisposable
 @rendermode Microsoft.AspNetCore.Components.Web.RenderMode.InteractiveServer
 
+@using Microsoft.JSInterop
+@using Microsoft.AspNetCore.SignalR.Client
+@using Tornado.Services
+@using Tornado.Components.Describe
 @inject IConfiguration Configuration
 @inject HttpClient Http
+@inject IJSRuntime Js
 @inject NavigationManager Navigation
-
-<section class="hero">
-    <div>
-        <h1>Tornado Cluster Map</h1>
-        <p>A friendly map of how your app runs in Kubernetes.</p>
-        <div class="meta">@LastUpdated</div>
-    </div>
-    <div class="hero-actions">
-        <button class="primary" @onclick="RefreshAll" disabled="@IsLoading">Refresh</button>
-    </div>
-</section>
+@inject LayoutState LayoutState
 
 @if (!string.IsNullOrWhiteSpace(LoadError))
 {
@@ -30,11 +26,10 @@
     </section>
 }
 
-<section class="card table-card">
+<section class="card table-card full-width hierarchy-card">
     <div class="table-header">
         <div>
-            <h2>Application Hierarchy</h2>
-            <div class="meta">Click a deployment to reveal its services, pods, and ingresses.</div>
+            <h2>Workload Hierarchy</h2>
         </div>
     </div>
     <div class="table-wrap">
@@ -50,24 +45,31 @@
             </tr>
             </thead>
             <tbody>
-            @foreach (var deployment in Deployments)
+            @foreach (var workload in VisibleWorkloads)
             {
-                var key = $"{deployment.Namespace}/{deployment.Name}";
-                var isSelected = SelectedDeploymentKey == key;
-                var services = GetDeploymentServices(deployment).ToList();
-                var pods = GetDeploymentPods(deployment).ToList();
-                var ingresses = GetDeploymentIngresses(services).ToList();
-                <tr class="row-deployment @(isSelected ? "row-selected" : "")" @onclick="() => ToggleDeployment(deployment)">
-                    <td><span class="tag tag-deploy">Deployment</span></td>
-                    <td>@deployment.Name</td>
-                    <td>@deployment.Namespace</td>
-                    <td>@FormatDeploymentStatus(deployment)</td>
+                var key = GetWorkloadKey(workload);
+                var isSelected = SelectedWorkloadKey == key;
+                var services = GetWorkloadServices(workload).ToList();
+                var pods = GetWorkloadPods(workload).ToList();
+                var ingresses = GetWorkloadIngresses(services).ToList();
+                <tr class="row-workload @(isSelected ? "row-selected" : "")" @onclick="() => ToggleWorkload(workload)">
+                    <td>
+                        <span class="disclosure">@(isSelected ? "v" : ">")</span>
+                        <span class="tag tag-clickable @GetWorkloadTagClass(workload.Kind)"
+                              @onclick:stopPropagation
+                              @onclick="() => OpenDescribe(workload.Kind, workload.Namespace, workload.Name)">
+                            @workload.Kind
+                        </span>
+                    </td>
+                    <td>@workload.Name</td>
+                    <td>@workload.Namespace</td>
+                    <td>@FormatWorkloadStatus(workload)</td>
                     <td>@FormatRelatedSummary(services.Count, pods.Count, ingresses.Count)</td>
                     <td>
-                        <button class="ghost"
+                        <button class="ghost danger pill-action"
                                 disabled="@Restarting.Contains(key)"
                                 @onclick:stopPropagation
-                                @onclick="() => RestartDeployment(deployment)">
+                                @onclick="() => RestartWorkload(workload)">
                             @(Restarting.Contains(key) ? "Restarting" : "Restart")
                         </button>
                     </td>
@@ -78,13 +80,27 @@
                     foreach (var pod in pods)
                     {
                         <tr class="row-child row-pod">
-                            <td><span class="tag tag-pod">Pod</span></td>
+                            <td>
+                                <span class="tag tag-pod tag-clickable"
+                                      @onclick:stopPropagation
+                                      @onclick="() => OpenDescribe(ResourceKindPod, pod.Namespace, pod.Name)">
+                                    Pod
+                                </span>
+                            </td>
                             <td>@pod.Name</td>
                             <td>@pod.Namespace</td>
-                            <td>@($"{pod.Status} · {pod.Ready} ready · {pod.Age}")</td>
+                            <td>
+                                <span class="status">
+                                    <span class="status-badge @GetStatusBadgeClass(pod.Status)">
+                                        @GetStatusBadgeLabel(pod.Status)
+                                    </span>
+                                    <span>@pod.Status</span>
+                                </span>
+                                <span class="status-meta">· @pod.Ready ready · @pod.Age</span>
+                            </td>
                             <td>@($"Node {pod.Node}")</td>
                             <td>
-                                <button class="ghost" @onclick:stopPropagation @onclick="() => OpenLogs(pod)">
+                                <button class="ghost pill-action" @onclick:stopPropagation @onclick="() => OpenLogs(pod)">
                                     Logs
                                 </button>
                             </td>
@@ -94,7 +110,13 @@
                     foreach (var service in services)
                     {
                         <tr class="row-child row-service">
-                            <td><span class="tag tag-service">Service</span></td>
+                            <td>
+                                <span class="tag tag-service tag-clickable"
+                                      @onclick:stopPropagation
+                                      @onclick="() => OpenDescribe(ResourceKindService, service.Namespace, service.Name)">
+                                    Service
+                                </span>
+                            </td>
                             <td>@service.Name</td>
                             <td>@service.Namespace</td>
                             <td>@($"{service.Type} · {FormatPorts(service.Ports)}")</td>
@@ -102,11 +124,7 @@
                             <td>
                                 @if (!string.IsNullOrWhiteSpace(GetServiceOpenUrl(service)))
                                 {
-                                    <a class="button-link" href="@GetServiceOpenUrl(service)" target="_blank" rel="noreferrer">Open</a>
-                                }
-                                else
-                                {
-                                    <span class="muted">n/a</span>
+                                    <a class="button-link link-external pill-action" href="@GetServiceOpenUrl(service)" target="_blank" rel="noreferrer">Open</a>
                                 }
                             </td>
                         </tr>
@@ -115,7 +133,13 @@
                     foreach (var ingress in ingresses)
                     {
                         <tr class="row-child row-ingress">
-                            <td><span class="tag tag-ingress">Ingress</span></td>
+                            <td>
+                                <span class="tag tag-ingress tag-clickable"
+                                      @onclick:stopPropagation
+                                      @onclick="() => OpenDescribe(ResourceKindIngress, ingress.Namespace, ingress.Name)">
+                                    Ingress
+                                </span>
+                            </td>
                             <td>@ingress.Name</td>
                             <td>@ingress.Namespace</td>
                             <td>@FormatIngressRules(ingress.Rules)</td>
@@ -123,11 +147,7 @@
                             <td>
                                 @if (!string.IsNullOrWhiteSpace(GetIngressOpenUrl(ingress)))
                                 {
-                                    <a class="button-link" href="@GetIngressOpenUrl(ingress)" target="_blank" rel="noreferrer">Open</a>
-                                }
-                                else
-                                {
-                                    <span class="muted">n/a</span>
+                                    <a class="button-link link-external pill-action" href="@GetIngressOpenUrl(ingress)" target="_blank" rel="noreferrer">Open</a>
                                 }
                             </td>
                         </tr>
@@ -148,27 +168,12 @@
 
 <section class="overview-grid">
     <div class="card mini-card">
-        <h3>Overview</h3>
-        <p class="muted">A quick snapshot of what exists right now.</p>
-        <div class="mini-metrics">
-            <div><strong>@Deployments.Count</strong> deployments</div>
-            <div><strong>@Pods.Count</strong> pods</div>
-            <div><strong>@Services.Count</strong> services</div>
-            <div><strong>@Ingresses.Count</strong> ingresses</div>
-            <div><strong>@Nodes.Count</strong> nodes</div>
-        </div>
-    </div>
-
-    <div class="card mini-card">
-        <h3>Nodes</h3>
+        <h3>Nodes <span class="mini-count">@Nodes.Count</span></h3>
         <div class="mini-table">
-            <div class="mini-row mini-head">
-                <span>Name</span>
-                <span>IP</span>
-            </div>
             @foreach (var node in Nodes)
             {
-                <div class="mini-row">
+                <div class="@GetNodeRowClass(node)"
+                     @onclick="() => OpenDescribe(ResourceKindNode, string.Empty, node.Name)">
                     <span>@node.Name</span>
                     <span>@(string.IsNullOrWhiteSpace(node.ExternalIp) ? node.InternalIp : node.ExternalIp)</span>
                 </div>
@@ -177,50 +182,100 @@
     </div>
 
     <div class="card mini-card">
-        <h3>Pods</h3>
+        <h3>Pods <span class="mini-count">@VisiblePods.Count</span></h3>
         <div class="mini-table">
-            <div class="mini-row mini-head">
-                <span>Name</span>
-                <span>Status</span>
-            </div>
-            @foreach (var pod in Pods)
+            @foreach (var pod in VisiblePods)
             {
-                <div class="mini-row">
+                <div class="@GetMiniRowClass(ResourceTypePod, pod.Namespace, pod.Name, IsRelatedPod(pod))"
+                     @onmouseenter="() => HandleHover(ResourceTypePod, pod.Namespace, pod.Name)"
+                     @onclick="() => OpenDescribe(ResourceKindPod, pod.Namespace, pod.Name)"
+                     @onmouseleave="ClearHover">
                     <span>@pod.Name</span>
-                    <span>@pod.Status</span>
+                    <span class="status">
+                        <span class="status-badge @GetStatusBadgeClass(pod.Status)">
+                            @GetStatusBadgeLabel(pod.Status)
+                        </span>
+                        <span>@pod.Status</span>
+                    </span>
                 </div>
             }
         </div>
     </div>
 
     <div class="card mini-card">
-        <h3>Services</h3>
+        <h3>Workloads <span class="mini-count">@VisibleWorkloads.Count</span></h3>
         <div class="mini-table">
-            <div class="mini-row mini-head">
-                <span>Name</span>
-                <span>Type</span>
-            </div>
-            @foreach (var service in Services)
+            @foreach (var workload in VisibleWorkloads)
             {
-                <div class="mini-row">
-                    <span>@service.Name</span>
-                    <span>@service.Type</span>
+                <div class="@GetMiniRowClass(ResourceTypeWorkload, workload.Namespace, workload.Name, IsRelatedWorkload(workload))"
+                     @onmouseenter="() => HandleHover(ResourceTypeWorkload, workload.Namespace, workload.Name)"
+                     @onclick="() => OpenDescribe(workload.Kind, workload.Namespace, workload.Name)"
+                     @onmouseleave="ClearHover">
+                    <span>@workload.Name</span>
+                    <span>@FormatWorkloadStatus(workload)</span>
                 </div>
             }
         </div>
     </div>
 
     <div class="card mini-card">
-        <h3>Ingresses</h3>
+        <h3>Services <span class="mini-count">@VisibleServices.Count</span></h3>
         <div class="mini-table">
-            <div class="mini-row mini-head">
-                <span>Name</span>
-                <span>Host</span>
-            </div>
-            @foreach (var ingress in Ingresses)
+            @foreach (var service in VisibleServices)
             {
-                <div class="mini-row">
-                    <span>@ingress.Name</span>
+                var serviceUrl = GetServiceOpenUrl(service);
+                <div class="@GetMiniRowClass(ResourceTypeService, service.Namespace, service.Name, IsRelatedService(service))"
+                     @onmouseenter="() => HandleHover(ResourceTypeService, service.Namespace, service.Name)"
+                     @onclick="() => OpenDescribe(ResourceKindService, service.Namespace, service.Name)"
+                     @onmouseleave="ClearHover">
+                    <span>
+                        @if (!string.IsNullOrWhiteSpace(serviceUrl))
+                        {
+                            <a class="mini-link link-external"
+                               href="@serviceUrl"
+                               target="_blank"
+                               rel="noreferrer"
+                               @onclick:stopPropagation>
+                                @service.Name
+                            </a>
+                        }
+                        else
+                        {
+                            @service.Name
+                        }
+                    </span>
+                    <span>@FormatPorts(service.Ports)</span>
+                </div>
+            }
+        </div>
+    </div>
+
+    <div class="card mini-card">
+        <h3>Ingresses <span class="mini-count">@VisibleIngresses.Count</span></h3>
+        <div class="mini-table">
+            @foreach (var ingress in VisibleIngresses)
+            {
+                var ingressUrl = GetIngressOpenUrl(ingress);
+                <div class="@GetMiniRowClass(ResourceTypeIngress, ingress.Namespace, ingress.Name, IsRelatedIngress(ingress))"
+                     @onmouseenter="() => HandleHover(ResourceTypeIngress, ingress.Namespace, ingress.Name)"
+                     @onclick="() => OpenDescribe(ResourceKindIngress, ingress.Namespace, ingress.Name)"
+                     @onmouseleave="ClearHover">
+                    <span>
+                        @if (!string.IsNullOrWhiteSpace(ingressUrl))
+                        {
+                            <a class="mini-link link-external"
+                               href="@ingressUrl"
+                               target="_blank"
+                               rel="noreferrer"
+                               @onclick:stopPropagation>
+                                @ingress.Name
+                            </a>
+                        }
+                        else
+                        {
+                            @ingress.Name
+                        }
+                    </span>
                     <span>@FormatIngressHost(ingress)</span>
                 </div>
             }
@@ -240,6 +295,12 @@
                 <button class="ghost" @onclick="CloseLogs">Close</button>
             </div>
             <div class="modal-body">
+                <div class="log-controls">
+                    <label class="control-label">
+                        Filter
+                        <input type="text" placeholder="e.g. error" @bind="LogFilter" @bind:event="oninput" @bind:after="OnLogFilterChanged" />
+                    </label>
+                </div>
                 @if (LogLoading)
                 {
                     <div class="meta">Loading logs...</div>
@@ -250,17 +311,26 @@
                 }
                 else
                 {
-                    <pre>@LogContent</pre>
+                    <pre>@((MarkupString)(LogContent ?? string.Empty))</pre>
                 }
             </div>
         </div>
     </div>
 }
 
+<DescribeModal IsOpen="@IsDescribeModalOpen"
+               Kind="@DescribeKind"
+               Namespace="@DescribeNamespace"
+               Name="@DescribeName"
+               Pods="@Pods"
+               OnClose="CloseDescribe"
+               OnOpenResource="OpenDescribeFromRef"
+               OnOpenLogs="OpenLogsFromRef" />
+
 @code {
     private readonly HashSet<string> Restarting = new();
     private List<ServiceSummary> Services { get; set; } = new();
-    private List<DeploymentSummary> Deployments { get; set; } = new();
+    private List<WorkloadSummary> Workloads { get; set; } = new();
     private List<IngressSummary> Ingresses { get; set; } = new();
     private List<PodSummary> Pods { get; set; } = new();
     private List<NodeSummary> Nodes { get; set; } = new();
@@ -268,23 +338,45 @@
     private bool IsLoading { get; set; }
     private string? LoadError { get; set; }
     private string? ActionMessage { get; set; }
-    private string? LastUpdated { get; set; }
-    private string? SelectedDeploymentKey { get; set; }
+    private DateTimeOffset? LastUpdatedAt { get; set; }
+    private string? SelectedWorkloadKey { get; set; }
+    private const int LogRefreshSeconds = 1;
+    private HashSet<string> NamespaceSelections { get; } = new(StringComparer.Ordinal);
+    private string? HoveredType { get; set; }
+    private string? HoveredNamespace { get; set; }
+    private string? HoveredName { get; set; }
+    private bool _scrollRelationsPending;
+    private DateTimeOffset _lastInteractionAt = DateTimeOffset.UtcNow;
+    private HubConnection? _clusterHub;
+
+    private CancellationTokenSource? LastUpdatedCts { get; set; }
 
     private bool IsLogModalOpen { get; set; }
     private bool LogLoading { get; set; }
     private string? LogTitle { get; set; }
     private string? LogSubtitle { get; set; }
     private string? LogContent { get; set; }
+    private string? LogContentRaw { get; set; }
     private string? LogError { get; set; }
+    private string? LogFilter { get; set; }
+    private CancellationTokenSource? LogFollowCts { get; set; }
+
+    private bool IsDescribeModalOpen { get; set; }
+    private string? DescribeKind { get; set; }
+    private string? DescribeNamespace { get; set; }
+    private string? DescribeName { get; set; }
 
     protected override async Task OnInitializedAsync()
     {
+        LayoutState.SetHeaderContent(HeaderContent);
         await RefreshAll();
+        await StartLiveUpdatesAsync();
+        UpdateLastUpdatedClock();
     }
 
     private async Task RefreshAll()
     {
+        MarkInteraction();
         IsLoading = true;
         LoadError = null;
         ActionMessage = null;
@@ -293,13 +385,14 @@
         {
             var podsTask = LoadPods();
             var servicesTask = LoadServices();
-            var deploymentsTask = LoadDeployments();
+            var workloadsTask = LoadWorkloads();
             var ingressesTask = LoadIngresses();
             var nodesTask = LoadNodes();
 
-            await Task.WhenAll(podsTask, servicesTask, deploymentsTask, ingressesTask, nodesTask);
+            await Task.WhenAll(podsTask, servicesTask, workloadsTask, ingressesTask, nodesTask);
 
-            LastUpdated = $"Last updated {DateTimeOffset.Now:t}";
+            LastUpdatedAt = DateTimeOffset.Now;
+            LayoutState.SetHeaderContent(HeaderContent);
         }
         catch (Exception ex)
         {
@@ -329,12 +422,12 @@
         }
     }
 
-    private async Task LoadDeployments()
+    private async Task LoadWorkloads()
     {
-        var data = await GetFromApiAsync<List<DeploymentSummary>>("/cluster/deployments");
+        var data = await GetFromApiAsync<List<WorkloadSummary>>("/cluster/workloads");
         if (data is not null)
         {
-            Deployments = data;
+            Workloads = data;
         }
     }
 
@@ -356,25 +449,458 @@
         }
     }
 
-    private void ToggleDeployment(DeploymentSummary deployment)
+    private void ToggleNamespace(string ns)
     {
-        var key = $"{deployment.Namespace}/{deployment.Name}";
-        SelectedDeploymentKey = SelectedDeploymentKey == key ? null : key;
+        MarkInteraction();
+        if (!NamespaceSelections.Add(ns))
+        {
+            NamespaceSelections.Remove(ns);
+        }
+        SelectedWorkloadKey = null;
     }
 
-    private async Task RestartDeployment(DeploymentSummary deployment)
+    private bool NamespaceSelected(string ns)
+        => NamespaceSelections.Contains(ns);
+
+    private string NamespaceLabel
+        => NamespaceSelections.Count == 0
+            ? "All namespaces"
+            : string.Join(", ", NamespaceSelections.OrderBy(entry => entry));
+
+    private async Task StartLiveUpdatesAsync()
     {
-        var key = $"{deployment.Namespace}/{deployment.Name}";
+        if (_clusterHub is not null)
+        {
+            return;
+        }
+
+        _clusterHub = new HubConnectionBuilder()
+            .WithUrl(Navigation.ToAbsoluteUri(ClusterHub.HubRoute))
+            .WithAutomaticReconnect()
+            .Build();
+
+        _clusterHub.On<ClusterSnapshot>(ClusterHub.ClusterUpdatedEvent, snapshot =>
+        {
+            ApplySnapshot(snapshot);
+        });
+
+        _clusterHub.Reconnected += async _ =>
+        {
+            await RequestSnapshotAsync();
+        };
+
+        await _clusterHub.StartAsync();
+        await RequestSnapshotAsync();
+    }
+
+    private void ApplySnapshot(ClusterSnapshot snapshot)
+    {
+        Pods = snapshot.Pods.ToList();
+        Services = snapshot.Services.ToList();
+        Workloads = snapshot.Workloads.ToList();
+        Ingresses = snapshot.Ingresses.ToList();
+        Nodes = snapshot.Nodes.ToList();
+        LastUpdatedAt = DateTimeOffset.Now;
+        LayoutState.SetHeaderContent(HeaderContent);
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private async Task RequestSnapshotAsync()
+    {
+        if (_clusterHub is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var snapshot = await _clusterHub.InvokeAsync<ClusterSnapshot?>("GetSnapshot");
+            if (snapshot is not null)
+            {
+                ApplySnapshot(snapshot);
+            }
+        }
+        catch (Exception)
+        {
+            // Ignore transient hub errors; fallback refresh still works.
+        }
+    }
+
+    private const string ResourceTypeWorkload = "workload";
+    private const string ResourceTypeService = "service";
+    private const string ResourceTypePod = "pod";
+    private const string ResourceTypeIngress = "ingress";
+    private const string ResourceTypeNode = "node";
+    private const string ResourceKindPod = "Pod";
+    private const string ResourceKindService = "Service";
+    private const string ResourceKindIngress = "Ingress";
+    private const string ResourceKindNode = "Node";
+
+    private bool HasHover => !string.IsNullOrWhiteSpace(HoveredType);
+
+    private void SetHover(string type, string ns, string name)
+    {
+        HoveredType = type;
+        HoveredNamespace = ns;
+        HoveredName = name;
+    }
+
+    private Task HandleHover(string type, string ns, string name)
+    {
+        MarkInteraction();
+        SetHover(type, ns, name);
+        _scrollRelationsPending = true;
+        return Task.CompletedTask;
+    }
+
+    private void ClearHover()
+    {
+        HoveredType = null;
+        HoveredNamespace = null;
+        HoveredName = null;
+        _scrollRelationsPending = false;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_scrollRelationsPending)
+        {
+            _scrollRelationsPending = false;
+            await Js.InvokeVoidAsync("tornadoScrollRelations");
+        }
+    }
+
+    private void OpenDescribe(string kind, string ns, string name)
+    {
+        MarkInteraction();
+        DescribeKind = kind;
+        DescribeNamespace = ns;
+        DescribeName = name;
+        IsDescribeModalOpen = true;
+    }
+
+    private Task OpenDescribeFromRef(ResourceRef reference)
+    {
+        OpenDescribe(reference.Kind, reference.Namespace, reference.Name);
+        return Task.CompletedTask;
+    }
+
+    private async Task OpenLogsFromRef(ResourceRef reference)
+    {
+        if (!string.Equals(reference.Kind, "Pod", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        CloseDescribe();
+        var pod = Pods.FirstOrDefault(item =>
+            string.Equals(item.Namespace, reference.Namespace, StringComparison.Ordinal) &&
+            string.Equals(item.Name, reference.Name, StringComparison.Ordinal));
+
+        if (pod is not null)
+        {
+            await OpenLogs(pod);
+            return;
+        }
+
+        var placeholder = new PodSummary(reference.Namespace, reference.Name, "", "Unknown", "0/0", 0, "", new Dictionary<string, string>());
+        await OpenLogs(placeholder);
+    }
+
+    private void CloseDescribe()
+    {
+        MarkInteraction();
+        IsDescribeModalOpen = false;
+        DescribeKind = null;
+        DescribeNamespace = null;
+        DescribeName = null;
+    }
+
+    private bool IsHovered(string type, string ns, string name)
+        => string.Equals(HoveredType, type, StringComparison.Ordinal) &&
+           string.Equals(HoveredNamespace, ns, StringComparison.Ordinal) &&
+           string.Equals(HoveredName, name, StringComparison.Ordinal);
+
+    private string GetMiniRowClass(string type, string ns, string name, bool isRelated)
+    {
+        if (IsHovered(type, ns, name))
+        {
+            return "mini-row is-hovered";
+        }
+
+        if (HasHover && isRelated)
+        {
+            return "mini-row is-related";
+        }
+
+        return "mini-row";
+    }
+
+    private string GetNodeRowClass(NodeSummary node)
+    {
+        if (IsRelatedNode(node))
+        {
+            return "mini-row is-related";
+        }
+
+        return "mini-row";
+    }
+
+    private WorkloadSummary? GetHoveredWorkload()
+        => HoveredType == ResourceTypeWorkload
+            ? VisibleWorkloads.FirstOrDefault(w => w.Namespace == HoveredNamespace && w.Name == HoveredName)
+            : null;
+
+    private ServiceSummary? GetHoveredService()
+        => HoveredType == ResourceTypeService
+            ? VisibleServices.FirstOrDefault(s => s.Namespace == HoveredNamespace && s.Name == HoveredName)
+            : null;
+
+    private PodSummary? GetHoveredPod()
+        => HoveredType == ResourceTypePod
+            ? VisiblePods.FirstOrDefault(p => p.Namespace == HoveredNamespace && p.Name == HoveredName)
+            : null;
+
+    private IngressSummary? GetHoveredIngress()
+        => HoveredType == ResourceTypeIngress
+            ? VisibleIngresses.FirstOrDefault(i => i.Namespace == HoveredNamespace && i.Name == HoveredName)
+            : null;
+
+
+    private bool IsRelatedWorkload(WorkloadSummary workload)
+    {
+        if (!HasHover)
+        {
+            return false;
+        }
+
+        var service = GetHoveredService();
+        if (service is not null)
+        {
+            return workload.Namespace == service.Namespace &&
+                   LabelsMatch(service.Selector, workload.Labels);
+        }
+
+        var pod = GetHoveredPod();
+        if (pod is not null)
+        {
+            return workload.Namespace == pod.Namespace &&
+                   LabelsMatch(workload.Labels, pod.Labels);
+        }
+
+        var ingress = GetHoveredIngress();
+        if (ingress is not null)
+        {
+            return IsIngressRelatedToWorkload(ingress, workload);
+        }
+
+        return false;
+    }
+
+    private bool IsRelatedService(ServiceSummary service)
+    {
+        if (!HasHover)
+        {
+            return false;
+        }
+
+        var workload = GetHoveredWorkload();
+        if (workload is not null)
+        {
+            return service.Namespace == workload.Namespace &&
+                   LabelsMatch(service.Selector, workload.Labels);
+        }
+
+        var pod = GetHoveredPod();
+        if (pod is not null)
+        {
+            return service.Namespace == pod.Namespace &&
+                   LabelsMatch(service.Selector, pod.Labels);
+        }
+
+        var ingress = GetHoveredIngress();
+        if (ingress is not null)
+        {
+            return ingress.Namespace == service.Namespace &&
+                   ingress.Rules.Any(rule => string.Equals(rule.Backend.ServiceName, service.Name, StringComparison.Ordinal));
+        }
+
+        return false;
+    }
+
+    private bool IsRelatedPod(PodSummary pod)
+    {
+        if (!HasHover)
+        {
+            return false;
+        }
+
+        var workload = GetHoveredWorkload();
+        if (workload is not null)
+        {
+            return pod.Namespace == workload.Namespace &&
+                   LabelsMatch(workload.Labels, pod.Labels);
+        }
+
+        var service = GetHoveredService();
+        if (service is not null)
+        {
+            return pod.Namespace == service.Namespace &&
+                   LabelsMatch(service.Selector, pod.Labels);
+        }
+
+        var ingress = GetHoveredIngress();
+        if (ingress is not null)
+        {
+            return IsIngressRelatedToPod(ingress, pod);
+        }
+
+        return false;
+    }
+
+    private bool IsRelatedIngress(IngressSummary ingress)
+    {
+        if (!HasHover)
+        {
+            return false;
+        }
+
+        var workload = GetHoveredWorkload();
+        if (workload is not null)
+        {
+            return IsIngressRelatedToWorkload(ingress, workload);
+        }
+
+        var service = GetHoveredService();
+        if (service is not null)
+        {
+            return ingress.Namespace == service.Namespace &&
+                   ingress.Rules.Any(rule => string.Equals(rule.Backend.ServiceName, service.Name, StringComparison.Ordinal));
+        }
+
+        var pod = GetHoveredPod();
+        if (pod is not null)
+        {
+            return IsIngressRelatedToPod(ingress, pod);
+        }
+
+        return false;
+    }
+
+    private bool IsRelatedNode(NodeSummary node)
+    {
+        if (!HasHover)
+        {
+            return false;
+        }
+
+        var pod = GetHoveredPod();
+        if (pod is not null)
+        {
+            return string.Equals(pod.Node, node.Name, StringComparison.Ordinal);
+        }
+
+        return VisiblePods.Any(visiblePod =>
+            IsRelatedPod(visiblePod) &&
+            string.Equals(visiblePod.Node, node.Name, StringComparison.Ordinal));
+    }
+
+    private static HashSet<string> GetIngressServiceNames(IngressSummary ingress)
+        => ingress.Rules
+            .Select(rule => rule.Backend.ServiceName)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToHashSet(StringComparer.Ordinal);
+
+    private bool IsIngressRelatedToWorkload(IngressSummary ingress, WorkloadSummary workload)
+    {
+        if (ingress.Namespace != workload.Namespace)
+        {
+            return false;
+        }
+
+        var serviceNames = GetIngressServiceNames(ingress);
+        if (serviceNames.Count == 0)
+        {
+            return false;
+        }
+
+        return GetWorkloadServices(workload).Any(service => serviceNames.Contains(service.Name));
+    }
+
+    private bool IsIngressRelatedToPod(IngressSummary ingress, PodSummary pod)
+    {
+        if (ingress.Namespace != pod.Namespace)
+        {
+            return false;
+        }
+
+        var serviceNames = GetIngressServiceNames(ingress);
+        if (serviceNames.Count == 0)
+        {
+            return false;
+        }
+
+        return VisibleServices.Any(service =>
+            service.Namespace == pod.Namespace &&
+            serviceNames.Contains(service.Name) &&
+            LabelsMatch(service.Selector, pod.Labels));
+    }
+
+    private void UpdateLastUpdatedClock()
+    {
+        LastUpdatedCts?.Cancel();
+        LastUpdatedCts = new CancellationTokenSource();
+        _ = RunLastUpdatedClockAsync(LastUpdatedCts.Token);
+    }
+
+    private async Task RunLastUpdatedClockAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        while (await timer.WaitForNextTickAsync(ct))
+        {
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void MarkInteraction()
+    {
+        _lastInteractionAt = DateTimeOffset.UtcNow;
+    }
+
+    private void ToggleWorkload(WorkloadSummary workload)
+    {
+        MarkInteraction();
+        var key = GetWorkloadKey(workload);
+        SelectedWorkloadKey = SelectedWorkloadKey == key ? null : key;
+    }
+
+    private async Task RestartWorkload(WorkloadSummary workload)
+    {
+        MarkInteraction();
+        var key = GetWorkloadKey(workload);
+        if (Restarting.Contains(key))
+        {
+            return;
+        }
+
+        var confirmed = await Js.InvokeAsync<bool>(
+            "confirm",
+            $"Restart {workload.Kind} {workload.Name} in {workload.Namespace}?");
+        if (!confirmed)
+        {
+            return;
+        }
+
         Restarting.Add(key);
         ActionMessage = null;
 
         try
         {
-            var requestUri = BuildRequestUri($"/cluster/deployments/{Uri.EscapeDataString(deployment.Namespace)}/{Uri.EscapeDataString(deployment.Name)}/restart");
+            var requestUri = BuildRequestUri($"/cluster/workloads/{Uri.EscapeDataString(workload.Kind)}/{Uri.EscapeDataString(workload.Namespace)}/{Uri.EscapeDataString(workload.Name)}/restart");
             using var response = await Http.PostAsync(requestUri, null);
             ActionMessage = response.IsSuccessStatusCode
-                ? $"Restarted deployment {deployment.Name} in {deployment.Namespace}."
-                : $"Failed to restart {deployment.Name}: HTTP {(int)response.StatusCode}.";
+                ? $"Restarted {workload.Kind} {workload.Name} in {workload.Namespace}."
+                : $"Failed to restart {workload.Kind} {workload.Name}: HTTP {(int)response.StatusCode}.";
         }
         catch (Exception ex)
         {
@@ -386,19 +912,25 @@
         }
     }
 
+    private static string GetWorkloadKey(WorkloadSummary workload)
+        => $"{workload.Kind}:{workload.Namespace}/{workload.Name}";
+
     private async Task OpenLogs(PodSummary pod)
     {
+        MarkInteraction();
         IsLogModalOpen = true;
         LogLoading = true;
         LogError = null;
         LogContent = null;
+        LogContentRaw = null;
         LogTitle = pod.Name;
         LogSubtitle = $"{pod.Namespace} · {pod.Node}";
 
         try
         {
             var requestUri = BuildRequestUri($"/cluster/pods/{Uri.EscapeDataString(pod.Namespace)}/{Uri.EscapeDataString(pod.Name)}/logs?tail=200");
-            LogContent = await Http.GetStringAsync(requestUri);
+            LogContentRaw = await Http.GetStringAsync(requestUri);
+            LogContent = BuildLogMarkup(LogContentRaw, LogFilter);
         }
         catch (Exception ex)
         {
@@ -408,26 +940,97 @@
         {
             LogLoading = false;
         }
+
+        UpdateLogFollow();
     }
 
     private void CloseLogs()
     {
+        MarkInteraction();
         IsLogModalOpen = false;
         LogContent = null;
+        LogContentRaw = null;
         LogError = null;
+        LogFollowCts?.Cancel();
     }
 
-    private IEnumerable<ServiceSummary> GetDeploymentServices(DeploymentSummary deployment)
-        => Services.Where(service =>
-            service.Namespace == deployment.Namespace &&
-            LabelsMatch(service.Selector, deployment.Labels));
+    private void OnLogFilterChanged()
+    {
+        LogContent = BuildLogMarkup(LogContentRaw, LogFilter);
+    }
 
-    private IEnumerable<PodSummary> GetDeploymentPods(DeploymentSummary deployment)
-        => Pods.Where(pod =>
-            pod.Namespace == deployment.Namespace &&
-            LabelsMatch(deployment.Labels, pod.Labels));
+    private void UpdateLogFollow()
+    {
+        LogFollowCts?.Cancel();
+        if (!IsLogModalOpen)
+        {
+            return;
+        }
 
-    private IEnumerable<IngressSummary> GetDeploymentIngresses(IReadOnlyList<ServiceSummary> services)
+        LogFollowCts = new CancellationTokenSource();
+        _ = RunLogFollowAsync(LogFollowCts.Token);
+    }
+
+    private async Task RunLogFollowAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(LogRefreshSeconds));
+        while (await timer.WaitForNextTickAsync(ct))
+        {
+            await RefreshLogs(ct);
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task RefreshLogs(CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(LogTitle) || string.IsNullOrWhiteSpace(LogSubtitle))
+        {
+            return;
+        }
+
+        var showLoading = LogContentRaw is null;
+        if (showLoading)
+        {
+            LogLoading = true;
+        }
+        LogError = null;
+        try
+        {
+            var parts = LogSubtitle.Split(" · ");
+            var ns = parts.Length > 0 ? parts[0] : "";
+            if (string.IsNullOrWhiteSpace(ns))
+            {
+                return;
+            }
+
+            var requestUri = BuildRequestUri($"/cluster/pods/{Uri.EscapeDataString(ns)}/{Uri.EscapeDataString(LogTitle)}/logs?tail=200");
+            LogContentRaw = await Http.GetStringAsync(requestUri, ct);
+            LogContent = BuildLogMarkup(LogContentRaw, LogFilter);
+        }
+        catch (Exception ex)
+        {
+            LogError = ex.Message;
+        }
+        finally
+        {
+            if (showLoading)
+            {
+                LogLoading = false;
+            }
+        }
+    }
+
+    private IEnumerable<ServiceSummary> GetWorkloadServices(WorkloadSummary workload)
+        => VisibleServices.Where(service =>
+            service.Namespace == workload.Namespace &&
+            LabelsMatch(service.Selector, workload.Labels));
+
+    private IEnumerable<PodSummary> GetWorkloadPods(WorkloadSummary workload)
+        => VisiblePods.Where(pod =>
+            pod.Namespace == workload.Namespace &&
+            LabelsMatch(workload.Labels, pod.Labels));
+
+    private IEnumerable<IngressSummary> GetWorkloadIngresses(IReadOnlyList<ServiceSummary> services)
     {
         if (services.Count == 0)
         {
@@ -435,7 +1038,7 @@
         }
 
         var serviceKeys = new HashSet<string>(services.Select(service => $"{service.Namespace}/{service.Name}"));
-        return Ingresses.Where(ingress =>
+        return VisibleIngresses.Where(ingress =>
             ingress.Rules.Any(rule => serviceKeys.Contains($"{ingress.Namespace}/{rule.Backend.ServiceName}")));
     }
 
@@ -501,6 +1104,49 @@
         return $"http://{host}:{nodePort}";
     }
 
+    private IReadOnlyList<string> NamespaceOptions
+        => Services.Select(s => s.Namespace)
+            .Concat(Workloads.Select(w => w.Namespace))
+            .Concat(Pods.Select(p => p.Namespace))
+            .Concat(Ingresses.Select(i => i.Namespace))
+            .Distinct()
+            .OrderBy(entry => entry)
+            .ToList();
+
+    private IReadOnlyList<WorkloadSummary> VisibleWorkloads
+        => FilterByNamespace(Workloads);
+
+    private IReadOnlyList<ServiceSummary> VisibleServices
+        => FilterByNamespace(Services);
+
+    private IReadOnlyList<PodSummary> VisiblePods
+        => FilterByNamespace(Pods);
+
+    private IReadOnlyList<IngressSummary> VisibleIngresses
+        => FilterByNamespace(Ingresses);
+
+    private IReadOnlyList<T> FilterByNamespace<T>(IReadOnlyList<T> items) where T : class
+    {
+        if (NamespaceSelections.Count == 0)
+        {
+            return items;
+        }
+
+        return items.Where(item =>
+        {
+            var ns = item switch
+            {
+                PodSummary pod => pod.Namespace,
+                ServiceSummary service => service.Namespace,
+                WorkloadSummary workload => workload.Namespace,
+                IngressSummary ingress => ingress.Namespace,
+                _ => ""
+            };
+
+            return NamespaceSelections.Contains(ns);
+        }).ToList();
+    }
+
     private static string FormatPorts(IReadOnlyList<ServicePortSummary> ports)
     {
         if (ports.Count == 0)
@@ -529,14 +1175,65 @@
     private static string FormatRelatedSummary(int services, int pods, int ingresses)
         => $"{services} svc · {pods} pods · {ingresses} ing";
 
-    private static string FormatDeploymentStatus(DeploymentSummary deployment)
+    private static string FormatWorkloadStatus(WorkloadSummary workload)
     {
-        var replicas = FormatNullable(deployment.Replicas);
-        var ready = FormatNullable(deployment.Ready);
-        var updated = FormatNullable(deployment.Updated);
-        var available = FormatNullable(deployment.Available);
-        return $"{ready}/{replicas} ready · {updated} updated · {available} available";
+        var desired = FormatNullable(workload.Desired);
+        var ready = FormatNullable(workload.Ready);
+        return $"{ready}/{desired}";
     }
+
+    private static string GetStatusBadgeClass(string status)
+    {
+        var normalized = status.ToLowerInvariant();
+        if (normalized.Contains("running") || normalized.Contains("ready") || normalized.Contains("completed"))
+        {
+            return "status-success";
+        }
+
+        if (normalized.Contains("pending") || normalized.Contains("creating") || normalized.Contains("progress"))
+        {
+            return "status-warning";
+        }
+
+        if (normalized.Contains("crash") || normalized.Contains("error") || normalized.Contains("failed") ||
+            normalized.Contains("backoff") || normalized.Contains("unknown"))
+        {
+            return "status-danger";
+        }
+
+        return "status-neutral";
+    }
+
+    private static string GetStatusBadgeLabel(string status)
+    {
+        var normalized = status.ToLowerInvariant();
+        if (normalized.Contains("running") || normalized.Contains("ready") || normalized.Contains("completed"))
+        {
+            return "ok";
+        }
+
+        if (normalized.Contains("pending") || normalized.Contains("creating") || normalized.Contains("progress"))
+        {
+            return "warn";
+        }
+
+        if (normalized.Contains("crash") || normalized.Contains("error") || normalized.Contains("failed") ||
+            normalized.Contains("backoff") || normalized.Contains("unknown"))
+        {
+            return "err";
+        }
+
+        return "info";
+    }
+
+    private static string GetWorkloadTagClass(string kind)
+        => kind.ToLowerInvariant() switch
+        {
+            "deployment" => "tag-deploy",
+            "statefulset" => "tag-sts",
+            "daemonset" => "tag-ds",
+            _ => "tag-deploy"
+        };
 
     private static string FormatIngressRules(IReadOnlyList<IngressRuleSummary> rules)
     {
@@ -563,4 +1260,90 @@
     }
 
     private static string FormatNullable(int? value) => value?.ToString() ?? "-";
+
+    private static string BuildLogMarkup(string? content, string? filter)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return string.Empty;
+        }
+
+        var encoded = System.Net.WebUtility.HtmlEncode(content);
+
+        if (string.IsNullOrWhiteSpace(filter))
+        {
+            return encoded;
+        }
+
+        var filterEncoded = System.Net.WebUtility.HtmlEncode(filter);
+        var pattern = System.Text.RegularExpressions.Regex.Escape(filterEncoded);
+        return System.Text.RegularExpressions.Regex.Replace(
+            encoded,
+            pattern,
+            match => $"<mark>{match.Value}</mark>",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        if (_clusterHub is not null)
+        {
+            _ = _clusterHub.DisposeAsync();
+        }
+        LogFollowCts?.Cancel();
+        LastUpdatedCts?.Cancel();
+        LayoutState.ClearHeaderContent(HeaderContent);
+        return ValueTask.CompletedTask;
+    }
+
+    private string LastUpdatedLabel
+        => LastUpdatedAt is null
+            ? "Last refresh -"
+            : $"Last refresh {FormatRelativeTime(LastUpdatedAt.Value)}";
+
+    private static string FormatRelativeTime(DateTimeOffset timestamp)
+    {
+        var elapsed = DateTimeOffset.Now - timestamp;
+        if (elapsed.TotalSeconds < 60)
+        {
+            var seconds = Math.Max(1, (int)elapsed.TotalSeconds);
+            return $"{seconds}s ago";
+        }
+
+        if (elapsed.TotalMinutes < 60)
+        {
+            var minutes = (int)elapsed.TotalMinutes;
+            return $"{minutes}m ago";
+        }
+
+        var hours = (int)elapsed.TotalHours;
+        return $"{hours}h ago";
+    }
+
+    private RenderFragment HeaderContent => @<section class="controls">
+        <div class="controls-left">
+            <span class="meta">@LastUpdatedLabel</span>
+        </div>
+        <div class="controls-right">
+            <div class="control-label">
+                Namespace
+                <details class="namespace-dropdown">
+                    <summary class="namespace-trigger">
+                        <span class="namespace-label">@NamespaceLabel</span>
+                    </summary>
+                    <div class="namespace-menu">
+                        @foreach (var entry in NamespaceOptions)
+                        {
+                            <label class="namespace-option">
+                                <input type="checkbox"
+                                       checked="@NamespaceSelected(entry)"
+                                       @onchange="() => ToggleNamespace(entry)" />
+                                <span>@entry</span>
+                            </label>
+                        }
+                    </div>
+                </details>
+            </div>
+        </div>
+    </section>;
 }
