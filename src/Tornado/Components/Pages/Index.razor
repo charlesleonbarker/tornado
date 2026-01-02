@@ -341,7 +341,6 @@
     private DateTimeOffset? LastUpdatedAt { get; set; }
     private string? SelectedWorkloadKey { get; set; }
     private const int LogRefreshSeconds = 1;
-    private HashSet<string> NamespaceSelections { get; } = new(StringComparer.Ordinal);
     private string? HoveredType { get; set; }
     private string? HoveredNamespace { get; set; }
     private string? HoveredName { get; set; }
@@ -448,24 +447,6 @@
             Nodes = data;
         }
     }
-
-    private void ToggleNamespace(string ns)
-    {
-        MarkInteraction();
-        if (!NamespaceSelections.Add(ns))
-        {
-            NamespaceSelections.Remove(ns);
-        }
-        SelectedWorkloadKey = null;
-    }
-
-    private bool NamespaceSelected(string ns)
-        => NamespaceSelections.Contains(ns);
-
-    private string NamespaceLabel
-        => NamespaceSelections.Count == 0
-            ? "All namespaces"
-            : string.Join(", ", NamespaceSelections.OrderBy(entry => entry));
 
     private async Task StartLiveUpdatesAsync()
     {
@@ -1105,48 +1086,17 @@
         return $"http://{host}:{nodePort}";
     }
 
-    private IReadOnlyList<string> NamespaceOptions
-        => Services.Select(s => s.Namespace)
-            .Concat(Workloads.Select(w => w.Namespace))
-            .Concat(Pods.Select(p => p.Namespace))
-            .Concat(Ingresses.Select(i => i.Namespace))
-            .Distinct()
-            .OrderBy(entry => entry)
-            .ToList();
-
     private IReadOnlyList<WorkloadSummary> VisibleWorkloads
-        => FilterByNamespace(Workloads);
+        => Workloads;
 
     private IReadOnlyList<ServiceSummary> VisibleServices
-        => FilterByNamespace(Services);
+        => Services;
 
     private IReadOnlyList<PodSummary> VisiblePods
-        => FilterByNamespace(Pods);
+        => Pods;
 
     private IReadOnlyList<IngressSummary> VisibleIngresses
-        => FilterByNamespace(Ingresses);
-
-    private IReadOnlyList<T> FilterByNamespace<T>(IReadOnlyList<T> items) where T : class
-    {
-        if (NamespaceSelections.Count == 0)
-        {
-            return items;
-        }
-
-        return items.Where(item =>
-        {
-            var ns = item switch
-            {
-                PodSummary pod => pod.Namespace,
-                ServiceSummary service => service.Namespace,
-                WorkloadSummary workload => workload.Namespace,
-                IngressSummary ingress => ingress.Namespace,
-                _ => ""
-            };
-
-            return NamespaceSelections.Contains(ns);
-        }).ToList();
-    }
+        => Ingresses;
 
     private static string FormatPorts(IReadOnlyList<ServicePortSummary> ports)
     {
@@ -1232,6 +1182,8 @@
         {
             "deployment" => "tag-deploy",
             "statefulset" => "tag-sts",
+            "stateful set" => "tag-sts",
+            "sts" => "tag-sts",
             "daemonset" => "tag-ds",
             _ => "tag-deploy"
         };
@@ -1325,26 +1277,6 @@
         <div class="controls-left">
             <span class="meta">@LastUpdatedLabel</span>
         </div>
-        <div class="controls-right">
-            <div class="control-label">
-                Namespace
-                <details class="namespace-dropdown">
-                    <summary class="namespace-trigger">
-                        <span class="namespace-label">@NamespaceLabel</span>
-                    </summary>
-                    <div class="namespace-menu">
-                        @foreach (var entry in NamespaceOptions)
-                        {
-                            <label class="namespace-option">
-                                <input type="checkbox"
-                                       checked="@NamespaceSelected(entry)"
-                                       @onchange="() => ToggleNamespace(entry)" />
-                                <span>@entry</span>
-                            </label>
-                        }
-                    </div>
-                </details>
-            </div>
-        </div>
+        <div class="controls-right"></div>
     </section>;
 }

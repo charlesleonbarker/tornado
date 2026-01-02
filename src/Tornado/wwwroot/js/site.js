@@ -1,6 +1,30 @@
 (() => {
     const root = document.documentElement;
     let observerAttached = false;
+    const themeStorageKey = "tornado-theme";
+
+    const getStoredTheme = () => {
+        try {
+            return localStorage.getItem(themeStorageKey);
+        } catch {
+            return null;
+        }
+    };
+
+    const getPreferredTheme = () => {
+        const stored = getStoredTheme();
+        if (stored === "light" || stored === "dark") {
+            return stored;
+        }
+        if (window.matchMedia?.("(prefers-color-scheme: dark)").matches) {
+            return "dark";
+        }
+        return "light";
+    };
+
+    const applyTheme = (theme) => {
+        root.dataset.theme = theme;
+    };
 
     const measureTopbar = (topbar) => {
         const height = Math.ceil(topbar.getBoundingClientRect().height);
@@ -31,6 +55,7 @@
     const findTopbar = () => document.querySelector(".topbar");
 
     const init = () => {
+        applyTheme(getPreferredTheme());
         const topbar = findTopbar();
         if (topbar) {
             attachObservers(topbar);
@@ -105,6 +130,34 @@
             tableObserver.observe(document.body, { childList: true, subtree: true });
         }, { once: true });
     }
+
+    const bindThemeToggle = () => {
+        const button = document.querySelector("[data-theme-toggle]");
+        if (!button || button.dataset.themeBound) {
+            return;
+        }
+        button.dataset.themeBound = "1";
+        button.addEventListener("click", () => {
+            const nextTheme = root.dataset.theme === "dark" ? "light" : "dark";
+            applyTheme(nextTheme);
+            try {
+                localStorage.setItem(themeStorageKey, nextTheme);
+            } catch {
+                // Ignore storage failures.
+            }
+        });
+    };
+
+    bindThemeToggle();
+    const themeObserver = new MutationObserver(() => bindThemeToggle());
+    if (document.body) {
+        themeObserver.observe(document.body, { childList: true, subtree: true });
+    } else {
+        document.addEventListener("DOMContentLoaded", () => {
+            themeObserver.observe(document.body, { childList: true, subtree: true });
+        }, { once: true });
+    }
+
 
     window.tornadoCopyText = async (text) => {
         if (!text) {
